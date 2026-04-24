@@ -9,7 +9,7 @@ from torch.nn import functional as F
 import gym
 
 from .models import AGENT_CLASSES, AGENT_ARCHS
-from torchkit.networks import ImageEncoder
+from torchkit.networks import ImageEncoder, ImageEncoder32
 
 # Markov policy
 from buffers.simple_replay_buffer import SimpleReplayBuffer
@@ -105,9 +105,29 @@ class Learner:
             import envs.credit_assign
 
             assert num_eval_tasks > 0
-            self.train_env = gym.make(env_name)
+
+            env_kwargs = kwargs.copy() if kwargs is not None else {}
+            print(f"[DEBUG] Creating POMDP env '{env_name}' with kwargs: {env_kwargs}")
+
+            # --- Register custom envs (safe to call multiple times) ---
+            try:
+                from pomdp_problems.legged_locomotion_generative_model.register_gym_env import (
+                    register_legged_locomotion_env,
+                )
+
+                register_legged_locomotion_env()
+                print("[DEBUG] Registered LeggedLocomotionPOMDP-v0")
+
+            except Exception as e:
+                print(f"[WARNING] Could not register custom env: {e}")
+
+
+            self.train_env = gym.make(env_name, **env_kwargs)
+
+            #self.train_env = gym.make(env_name)
             self.train_env.seed(self.seed)
             self.train_env.action_space.np_random.seed(self.seed)  # crucial
+            self.train_env.unwrapped.set_use_reward_shaping(True)
 
             self.eval_env = self.train_env
             self.eval_env.seed(self.seed + 1)
@@ -116,7 +136,9 @@ class Learner:
             self.eval_tasks = num_eval_tasks * [None]
 
             self.max_rollouts_per_task = 1
-            self.max_trajectory_len = self.train_env._max_episode_steps
+            self.max_trajectory_len = getattr(
+                self.train_env, "_max_episode_steps", 60
+            )
 
         elif self.env_type == "atari":
             from envs.atari import create_env
@@ -234,9 +256,22 @@ class Learner:
         self.agent_arch = agent_class.ARCH
         logger.log(agent_class, self.agent_arch)
 
-        if image_encoder is not None:  # catch, keytodoor
-            image_encoder_fn = lambda: ImageEncoder(
-                image_shape=self.train_env.image_space.shape, **image_encoder
+        if image_encoder is not None:
+            image_shape = self.train_env.image_space.shape
+            encoder_cfg = dict(image_encoder)
+
+            encoder_type = encoder_cfg.pop("type", "large")
+
+            if encoder_type == "small":
+                encoder_cls = ImageEncoder
+            elif encoder_type == "large":
+                encoder_cls = ImageEncoder32            
+            else:
+                raise ValueError(f"Unknown image encoder type: {encoder_type}")
+
+            image_encoder_fn = lambda: encoder_cls(
+                image_shape=image_shape,
+                **encoder_cfg,
             )
         else:
             image_encoder_fn = lambda: None
@@ -604,67 +639,78 @@ class Learner:
                 # assume initial reward = 0.0
                 action, reward, internal_state = self.agent.get_initial_info()
 
-            for episode_idx in range(num_episodes):
-                running_reward = 0.0
-                for _ in range(num_steps_per_episode):
-                    if self.agent_arch == AGENT_ARCHS.Memory:
-                        (action, _, _, _), internal_state = self.agent.act(
-                            prev_internal_state=internal_state,
-                            prev_action=action,
-                            reward=reward,
-                            obs=obs,
-                            deterministic=deterministic,
-                        )
-                    else:
-                        action, _, _, _ = self.agent.act(
-                            obs, deterministic=deterministic
-                        )
+            # Cache current use_reward_shaping                
+            use_reward_shaping = self.eval_env.unwrapped.get_use_reward_shaping()
+            self.eval_env.unwrapped.set_use_reward_shaping(False)
 
-                    # observe reward and next obs
-                    next_obs, reward, done, info = utl.env_step(
-                        self.eval_env, action.squeeze(dim=0)
-                    )
+            try:
+                for episode_idx in range(num_episodes):
+                    running_reward = 0.0
+                    for _ in range(num_steps_per_episode):
+                        if self.agent_arch == AGENT_ARCHS.Memory:
+                            (action, _, _, _), internal_state = self.agent.act(
+                                prev_internal_state=internal_state,
+                                prev_action=action,
+                                reward=reward,
+                                obs=obs,
+                                deterministic=deterministic,
+                            )
+                        else:
+                            action, _, _, _ = self.agent.act(
+                                obs, deterministic=deterministic
+                            )
 
-                    # add raw reward
-                    running_reward += reward.item()
-                    # clip reward if necessary for policy inputs
-                    if self.reward_clip and self.env_type == "atari":
-                        reward = torch.tanh(reward)
+                
 
-                    step += 1
-                    done_rollout = False if ptu.get_numpy(done[0][0]) == 0.0 else True
-
-                    if self.env_type == "meta":
-                        observations[task_idx, step, :] = ptu.get_numpy(
-                            next_obs[0, :obs_size]
+                        # observe reward and next obs
+                        next_obs, reward, done, info = utl.env_step(
+                            self.eval_env, action.squeeze(dim=0)
                         )
 
-                    # set: obs <- next_obs
-                    obs = next_obs.clone()
+                        # add raw reward
+                        running_reward += reward.item()
+                        # clip reward if necessary for policy inputs
+                        if self.reward_clip and self.env_type == "atari":
+                            reward = torch.tanh(reward)
 
-                    if (
-                        self.env_type == "meta"
-                        and "is_goal_state" in dir(self.eval_env.unwrapped)
-                        and self.eval_env.unwrapped.is_goal_state()
-                    ):
-                        success_rate[task_idx] = 1.0  # ever once reach
-                    elif (
-                        self.env_type == "generalize"
-                        and self.eval_env.unwrapped.is_success()
-                    ):
-                        success_rate[task_idx] = 1.0  # ever once reach
-                    elif "success" in info and info["success"] == True:  # keytodoor
-                        success_rate[task_idx] = 1.0
+                        step += 1
+                        done_rollout = False if ptu.get_numpy(done[0][0]) == 0.0 else True
 
-                    if done_rollout:
-                        # for all env types, same
-                        break
-                    if self.env_type == "meta" and info["done_mdp"] == True:
-                        # for early stopping meta episode like Ant-Dir
-                        break
+                        if self.env_type == "meta":
+                            observations[task_idx, step, :] = ptu.get_numpy(
+                                next_obs[0, :obs_size]
+                            )
 
-                returns_per_episode[task_idx, episode_idx] = running_reward
-            total_steps[task_idx] = step
+                        # set: obs <- next_obs
+                        obs = next_obs.clone()
+
+                        if (
+                            self.env_type == "meta"
+                            and "is_goal_state" in dir(self.eval_env.unwrapped)
+                            and self.eval_env.unwrapped.is_goal_state()
+                        ):
+                            success_rate[task_idx] = 1.0  # ever once reach
+                        elif (
+                            self.env_type == "generalize"
+                            and self.eval_env.unwrapped.is_success()
+                        ):
+                            success_rate[task_idx] = 1.0  # ever once reach
+                        elif "success" in info and info["success"] == True:  # keytodoor
+                            success_rate[task_idx] = 1.0
+
+                        if done_rollout:
+                            # for all env types, same
+                            break
+                        if self.env_type == "meta" and info["done_mdp"] == True:
+                            # for early stopping meta episode like Ant-Dir
+                            break
+
+                    returns_per_episode[task_idx, episode_idx] = running_reward
+                total_steps[task_idx] = step
+            finally:
+                # Set cached use_reward_shaping
+                self.eval_env.unwrapped.set_use_reward_shaping(use_reward_shaping)
+
         return returns_per_episode, success_rate, observations, total_steps
 
     def log_train_stats(self, train_stats):

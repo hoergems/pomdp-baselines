@@ -83,6 +83,16 @@ class SeqReplayBuffer:
 
         all the inputs have 2D shape of (L, dim)
         """
+        print(
+            "[DEBUG add_episode]",
+            "obs", observations.shape,
+            "act", actions.shape,
+            "rew", rewards.shape,
+            "term", terminals.shape,
+            "next_obs", next_observations.shape,
+        )
+
+
         assert (
             observations.shape[0]
             == actions.shape[0]

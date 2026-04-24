@@ -123,6 +123,8 @@ class ImageEncoder(nn.Module):
         normalize_pixel=False,
     ):
         super(ImageEncoder, self).__init__()
+        print(f"image_shape", image_shape)
+        sdfsdfdf        
         self.shape = image_shape
         self.kernel_size = kernel_size
         self.stride = stride
@@ -166,3 +168,64 @@ class ImageEncoder(nn.Module):
         embed = torch.reshape(embed, list(batch_size) + [-1])  # (T, B, C*H*W)
         embed = self.linear(embed)  # (T, B, embed_size)
         return embed
+
+class ImageEncoder32(nn.Module):
+    def __init__(
+        self,
+        image_shape,
+        embed_size=128,
+        activation="elu",
+        from_flattened=False,
+        normalize_pixel=False,
+    ):
+        super().__init__()
+        self.shape = image_shape
+        self.from_flattened = from_flattened
+        self.normalize_pixel = normalize_pixel
+
+        C, H, W = image_shape
+        assert H == W, f"Expected square images, got {image_shape}"
+
+        act_cls = ACTIVATIONS[activation]
+
+        if H > 32:
+            c1, c2, c3 = 32, 64, 128
+            k3, s3 = 5, 4
+            p1, p2, p3 = 2, 2, 1
+        else:
+            c1, c2, c3 = 16, 32, 64
+            k3, s3 = 3, 2
+            p1, p2, p3 = 2, 2, 2
+
+        self.conv1 = nn.Conv2d(C, c1, kernel_size=k3, stride=2, padding=p1)
+        self.conv2 = nn.Conv2d(c1, c2, kernel_size=k3, stride=2, padding=p2)
+        self.conv3 = nn.Conv2d(c2, c3, kernel_size=k3, stride=s3, padding=p3)
+        self.act = act_cls()
+
+        with torch.no_grad():
+            dummy = torch.zeros(1, C, H, W)
+            feat = self.act(self.conv1(dummy))
+            feat = self.act(self.conv2(feat))
+            feat = self.act(self.conv3(feat))
+            self._feat_dim = feat.flatten(1).shape[1]
+
+        self.linear = nn.Linear(self._feat_dim, embed_size)
+        self.embed_size = embed_size
+
+    def forward(self, image):
+        if self.from_flattened:
+            batch_shape = image.shape[:-1]
+            image = image.reshape(int(np.prod(batch_shape)), *self.shape)
+        else:
+            batch_shape = [image.shape[0]]
+
+        if self.normalize_pixel:
+            image = image / 255.0
+
+        feat = self.act(self.conv1(image))
+        feat = self.act(self.conv2(feat))
+        feat = self.act(self.conv3(feat))
+        feat = feat.flatten(1)
+        embed = self.linear(feat)
+
+        return embed.reshape(*batch_shape, -1)

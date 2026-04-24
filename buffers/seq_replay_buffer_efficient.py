@@ -79,26 +79,56 @@ class RAMEfficient_SeqReplayBuffer:
     def clear(self):
         self._top = 0  # trajectory level (first dim in 3D buffer)
         self._size = 0  # trajectory level (first dim in 3D buffer)
+        self._num_total_episodes_seen = 0
+        self._num_skipped_short_episodes = 0
 
     def add_episode(self, observations, actions, rewards, terminals, next_observations):
         """
-        NOTE: must add one whole episode/sequence/trajectory,
-                        not some partial transitions
-        the length of different episode can vary, but must be greater than 2
-                so that the end of valid_starts is 0.
+        Add one full episode/sequence/trajectory.
 
-        all the inputs have 2D shape of (L, dim)
+        All inputs must have shape (L, dim). For this sequence replay buffer,
+        only episodes with L >= 2 are stored. Shorter episodes are skipped.
         """
-        assert (
+
+        if not (
             observations.shape[0]
             == actions.shape[0]
             == rewards.shape[0]
             == terminals.shape[0]
             == next_observations.shape[0]
-            >= 2
-        )
+        ):
+            raise ValueError(
+                f"Mismatched episode lengths: "
+                f"obs={observations.shape}, "
+                f"act={actions.shape}, "
+                f"rew={rewards.shape}, "
+                f"term={terminals.shape}, "
+                f"next_obs={next_observations.shape}"
+            )
 
-        seq_len = observations.shape[0]  # L
+        seq_len = observations.shape[0]
+
+        # --- bookkeeping for diagnostics ---
+        self._num_total_episodes_seen += 1
+
+        if seq_len < 2:
+            self._num_skipped_short_episodes += 1
+
+            if (
+                self._num_skipped_short_episodes <= 10
+                or self._num_skipped_short_episodes % 100 == 0
+            ):
+                skipped_frac = (
+                    self._num_skipped_short_episodes / self._num_total_episodes_seen
+                )
+                print(
+                    f"[DEBUG] Skipping short episode of length {seq_len} "
+                    f"(skipped={self._num_skipped_short_episodes}, "
+                    f"total={self._num_total_episodes_seen}, "
+                    f"frac={skipped_frac:.3f})"
+                )
+            return
+
         indices = list(
             np.arange(self._top, self._top + seq_len) % self._max_replay_buffer_size
         )
