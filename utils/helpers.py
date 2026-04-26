@@ -56,6 +56,31 @@ def env_step(env, action):
 
     return next_obs, reward, done, info
 
+def env_step_batched(env, action):
+    """
+    action:
+      continuous: torch.Tensor [N, act_dim]
+      discrete one-hot: torch.Tensor [N, act_dim]
+
+    returns:
+      next_obs: [N, obs_dim]
+      reward:   [N, 1]
+      done:     [N, 1]
+      info:     whatever env returns
+    """
+    action_np = ptu.get_numpy(action)
+
+    if env.action_space.__class__.__name__ == "Discrete":
+        action_np = np.argmax(action_np, axis=-1)  # [N]
+
+    next_obs, reward, done, info = env.step(action_np)
+
+    next_obs = ptu.from_numpy(next_obs).view(next_obs.shape[0], -1)
+    reward = ptu.from_numpy(np.asarray(reward, dtype=np.float32)).view(-1, 1)
+    done = ptu.from_numpy(np.asarray(done, dtype=np.float32)).view(-1, 1)
+
+    return next_obs, reward, done, info
+
 
 def unpack_batch(batch):
     """unpack a batch and return individual elements

@@ -31,6 +31,8 @@ flags.DEFINE_boolean(
     "whether observe the privileged information of POMDP, reduced to MDP",
 )
 flags.DEFINE_boolean("debug", False, "debug mode")
+flags.DEFINE_string("resume_ckpt", None, "path to training checkpoint")
+flags.DEFINE_boolean("save_ckpt", False, "save training checkpoints")
 
 flags.FLAGS(sys.argv)
 yaml = YAML()
@@ -137,6 +139,8 @@ if seq_model != "mlp":
         policy_input_str += "r"
     exp_id += policy_input_str + "/"
 
+v['train']['save_chkpt'] = FLAGS.save_ckpt
+
 os.makedirs(exp_id, exist_ok=True)
 log_folder = os.path.join(exp_id, system.now_str())
 logger_formats = ["stdout", "log", "csv"]
@@ -161,6 +165,16 @@ learner = Learner(
     policy_args=v["policy"],
     seed=seed,
 )
+
+if FLAGS.resume_ckpt is not None:
+    chkp_path = os.path.join(FLAGS.resume_ckpt, "training_latest.pt")
+    replay_buffer_path = os.path.join(FLAGS.resume_ckpt, "replay_buffer.npz")
+    logger.log(f"[Resume] Loading checkpoint: {chkp_path}")
+    learner.load_training_checkpoint(
+        chkp_path,        
+        restore_rng=True,
+    )
+    learner.load_replay_buffer(replay_buffer_path)
 
 logger.log(
     f"total RAM usage: {psutil.Process().memory_info().rss / 1024 ** 3 :.2f} GB\n"
