@@ -416,6 +416,8 @@ class Learner:
         self._n_rollouts_total = 0
         self._successes_in_buffer = 0
 
+        self._best_eval_return = -np.inf
+
         self._start_time = time.time()
         self._start_time_last = time.time()
 
@@ -930,7 +932,7 @@ class Learner:
         return rl_losses_agg
 
     @torch.no_grad()
-    def evaluate_batched(self, tasks, deterministic=True):
+    def evaluate_batched(self, tasks, deterministic=True, save_best=True, eval_shaped_reward=True):
         num_eval_episodes = len(tasks)
         print(f"[DEBUG]: Evaluate using {num_eval_episodes} episodes")
 
@@ -988,7 +990,12 @@ class Learner:
                 next_obs = next_obs.view(next_obs.shape[0], -1)
 
                 done_np = ptu.get_numpy(done.squeeze(-1).bool())
-                reward_np = ptu.get_numpy(reward_new.squeeze(-1))
+                if eval_shaped_reward:
+                    reward_np = ptu.get_numpy(reward_new.squeeze(-1))
+                else:
+                    if "raw_reward" not in info or info["raw_reward"] is None:
+                        raise RuntimeError("Couldn't find raw_reward in info")
+                    reward_np = ptu.get_numpy(info['raw_reward'].squeeze(-1))
 
                 # Active for metric accumulation means:
                 # - untracked envs: always active, since they are just filler envs
@@ -1086,6 +1093,25 @@ class Learner:
         returns_per_episode = returns_flat.reshape(num_eval_episodes, num_episodes)
         success_rate = success_flat
         total_steps = steps_flat
+
+        avg_return = float(np.mean(returns_per_episode))
+        if not hasattr(self, "_best_eval_return"):
+            self._best_eval_return = -np.inf
+
+        if avg_return >= self._best_eval_return:
+            self._best_eval_return = avg_return
+
+            if save_best:
+                self.save_model(
+                    step=self._n_env_steps_total,
+                    perf=avg_return,
+                    filename="best_agent.pt",
+                )
+
+                print(
+                    f"[Best Model] New best eval return: {avg_return:.3f} "
+                    f"at env step {self._n_env_steps_total}"
+                )
 
         return returns_per_episode, success_rate, observations, total_steps
 
@@ -1434,6 +1460,22 @@ class Learner:
         else:
             return np.mean(np.sum(returns_eval, axis=-1))
 
+    def save_model(self, step, perf, filename=None):
+        if filename is None:
+            filename = f"agent_{step}_perf{perf:.3f}.pt"
+
+        save_dir = os.path.join(logger.get_dir(), "save")
+        os.makedirs(save_dir, exist_ok=True)
+
+        save_path = os.path.join(save_dir, filename)
+        torch.save(self.agent.state_dict(), save_path)
+
+        print(f"[Model] Saved to {save_path}")
+
+    def load_model(self, ckpt_path):
+        self.agent.load_state_dict(torch.load(ckpt_path, map_location=ptu.device))
+        print("load successfully from", ckpt_path)
+
     def _collect_training_state(self):
         import random
 
@@ -1450,6 +1492,7 @@ class Learner:
             "n_rl_update_steps_total": self._n_rl_update_steps_total,
             "n_rollouts_total": self._n_rollouts_total,
             "successes_in_buffer": self._successes_in_buffer,
+            "best_eval_return": self._best_eval_return,
 
             "rng_state": {
                 "python": random.getstate(),
@@ -1568,7 +1611,8 @@ class Learner:
             ckpt.get("n_rl_update_steps_total", 0)
         )
         self._n_rollouts_total = int(ckpt.get("n_rollouts_total", 0))
-        self._successes_in_buffer = int(ckpt.get("successes_in_buffer", 0))        
+        self._successes_in_buffer = int(ckpt.get("successes_in_buffer", 0))  
+        self._best_eval_return = float(ckpt.get("best_eval_return", -np.inf))      
 
         sacd_state = ckpt.get("sacd", None)
         algo = self.agent.algo

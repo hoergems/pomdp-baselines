@@ -175,6 +175,12 @@ class ModelFreeOffPolicy_Separate_RNN(nn.Module):
 
         self.critic_optimizer.zero_grad()
         (qf1_loss + qf2_loss).backward()
+
+        torch.nn.utils.clip_grad_norm_(
+            self.critic.parameters(),
+            max_norm=20.0,
+        )
+
         self.critic_optimizer.step()
 
         ### 2. Actor loss

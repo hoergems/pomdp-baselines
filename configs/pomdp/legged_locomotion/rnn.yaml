@@ -1,0 +1,84 @@
+seed: 73
+cuda: 0
+
+env:
+  vectorized: True
+  num_envs: 500
+  env_type: pomdp
+  env_name: LeggedLocomotionPOMDP-v0
+
+  config_path: configs/anymal_navigation_reduced.yaml
+  overrides:
+    headless: true
+    seed: 73
+
+  num_eval_tasks: 5
+
+train:
+  # Old equivalent: 100000 * 1 * 60 = 9M env steps
+  target_env_steps_total: 6000000
+
+  # Old equivalent: 5 rollout warmup * 60 horizon = 300 usable buffer steps
+  target_initial_env_steps: 300
+
+  # Old equivalent: 1 rollout per iter * 60 horizon = 60 env steps per collect/update cycle
+  collect_env_steps_per_iter: 60
+
+  # Keep this: update/data ratio stays fixed
+  #num_updates_per_iter: 0.25
+  num_updates_per_iter: 0.1
+
+  # Legacy fields can stay, but no longer drive the budget if explicit fields above are set
+  num_iters: 100000
+  num_init_rollouts_pool: 5
+  num_rollouts_per_iter: 1
+
+  buffer_type: seq_efficient
+  buffer_size: 1e6
+  batch_size: 32
+  sampled_seq_len: -1
+  sample_weight_baseline: 0.0
+
+eval:
+  # Old equivalent: every 50 iters * 90 steps = 4500 env steps
+  #eval_every_env_steps: 4500
+  eval_every_env_steps: 50000
+
+  save_every_env_steps: -1
+  eval_stochastic: false
+  log_tensorboard: true
+
+  # Legacy
+  log_interval: 50
+  save_interval: -1
+
+policy:
+  separate: True
+  seq_model: lstm
+
+  algo_name: sacd
+
+  action_embedding_size: 8
+
+  observ_embedding_size: 0
+  image_encoder:
+    type: large
+    from_flattened: True
+    normalize_pixel: False
+
+  reward_embedding_size: 8
+
+  rnn_hidden_size: 128
+
+  dqn_layers: [256, 256]
+  policy_layers: [256, 256]
+
+  lr: 0.0003
+  gamma: 0.99
+  tau: 0.005
+
+  sacd:
+    entropy_alpha: null
+    automatic_entropy_tuning: True
+    target_entropy: 0.5 # the ratio: target_entropy = ratio * log(|A|)
+    alpha_lr: 0.0003

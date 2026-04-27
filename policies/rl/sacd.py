@@ -20,16 +20,28 @@ class SACD(RLAlgorithmBase):
         target_entropy=None,
         alpha_lr=3e-4,
         action_dim=None,
+        alpha_min=1e-4,
+        alpha_max=2.0,
     ):
 
         self.automatic_entropy_tuning = automatic_entropy_tuning
+        self.alpha_min = alpha_min
+        self.alpha_max = alpha_max
+
         if self.automatic_entropy_tuning:
             assert target_entropy is not None
+            assert action_dim is not None
             self.target_entropy = float(target_entropy) * np.log(action_dim)
             self.log_alpha_entropy = torch.zeros(
                 1, requires_grad=True, device=ptu.device
             )
             self.alpha_entropy_optim = Adam([self.log_alpha_entropy], lr=alpha_lr)
+
+            with torch.no_grad():
+                self.log_alpha_entropy.clamp_(
+                    min=np.log(self.alpha_min),
+                    max=np.log(self.alpha_max),
+                )
             self.alpha_entropy = self.log_alpha_entropy.exp().detach().item()
         else:
             self.alpha_entropy = entropy_alpha
@@ -194,13 +206,31 @@ class SACD(RLAlgorithmBase):
 
     def update_others(self, current_log_probs):
         if self.automatic_entropy_tuning:
-            alpha_entropy_loss = -self.log_alpha_entropy.exp() * (
-                current_log_probs + self.target_entropy
-            )
+            entropy_error = current_log_probs + self.target_entropy
+            '''alpha_entropy_loss = -self.log_alpha_entropy.exp() * (
+                entropy_error
+            )'''
+            alpha_entropy_loss = -self.log_alpha_entropy * entropy_error
 
             self.alpha_entropy_optim.zero_grad()
             alpha_entropy_loss.backward()
             self.alpha_entropy_optim.step()
+
+            with torch.no_grad():
+                self.log_alpha_entropy.clamp_(
+                    min=np.log(self.alpha_min),
+                    max=np.log(self.alpha_max),
+                )
+
+
             self.alpha_entropy = self.log_alpha_entropy.exp().item()
+
+            return {
+                "policy_entropy": -current_log_probs,
+                "alpha": self.alpha_entropy,
+                "target_entropy": self.target_entropy,
+                "entropy_error": entropy_error,
+                "alpha_entropy_loss": alpha_entropy_loss.item(),
+            }
 
         return {"policy_entropy": -current_log_probs, "alpha": self.alpha_entropy}
