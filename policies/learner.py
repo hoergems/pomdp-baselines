@@ -500,7 +500,7 @@ class Learner:
             if isinstance(self.num_updates_per_iter, float):
                 # update: pomdp task updates more for the first iter_
                 train_stats = self.update(
-                    int(self._n_env_steps_total * self.num_updates_per_iter)
+                    int(self._n_env_steps_total * self.num_updates_per_iter),                    
                 )
                 self.log_train_stats(train_stats)
 
@@ -826,6 +826,28 @@ class Learner:
                 next_obs, reward, done, info = utl.env_step(
                     self.train_env, action.squeeze(dim=0)
                 )
+
+                for name, value in {
+                    "obs": obs,
+                    "action": action,
+                    "next_obs": next_obs,
+                    "reward": reward,
+                    "done": done,
+                }.items():
+                    if value is None:
+                        raise RuntimeError(f"[collect_rollouts] {name} is None")
+
+                    if not torch.is_tensor(value):
+                        raise RuntimeError(
+                            f"[collect_rollouts] {name} is not a tensor: {type(value)}"
+                        )
+
+                    if not torch.isfinite(value).all():
+                        raise RuntimeError(
+                            f"[collect_rollouts] {name} has non-finite values at "
+                            f"rollout={idx}, step={steps}. value={value}"
+                        )
+
                 if self.reward_clip and self.env_type == "atari":
                     reward = torch.tanh(reward)
 

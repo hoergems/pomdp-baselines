@@ -77,8 +77,6 @@ def main():
     logger.log("pid", os.getpid(), socket.gethostname())
     yaml.dump(v, Path(f"{log_folder}/variant_run.yml"))
 
-    # Build learner.
-    # This also creates the gym env under the hood.
     learner = Learner(
         env_args=v["env"],
         train_args=v["train"],
@@ -87,10 +85,8 @@ def main():
         seed=seed,
     )
 
-    # Load trained agent weights.
     learner.load_model(FLAGS.agent_weights)
 
-    # Make sure eval episode count matches what evaluate/evaluate_batched expects.
     learner.eval_tasks = FLAGS.num_episodes * [None]
 
     if getattr(learner, "vectorized_env", False):

@@ -15,7 +15,7 @@ env:
   num_eval_tasks: 5
 
 train:
-  # Old equivalent: 100000 * 1 * 60 = 9M env steps
+  # Old equivalent: 100000 * 1 * 60 = 6M env steps
   target_env_steps_total: 6000000
 
   # Old equivalent: 5 rollout warmup * 60 horizon = 300 usable buffer steps
@@ -42,7 +42,7 @@ train:
 eval:
   # Old equivalent: every 50 iters * 90 steps = 4500 env steps
   #eval_every_env_steps: 4500
-  eval_every_env_steps: 50000
+  eval_every_env_steps: 100000
 
   save_every_env_steps: -1
   eval_stochastic: false
@@ -81,4 +81,5 @@ policy:
     entropy_alpha: null
     automatic_entropy_tuning: True
     target_entropy: 0.5 # the ratio: target_entropy = ratio * log(|A|)
+    #target_entropy: 0.7 # the ratio: target_entropy = ratio * log(|A|)
     alpha_lr: 0.0003

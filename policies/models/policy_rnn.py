@@ -46,7 +46,7 @@ class ModelFreeOffPolicy_Separate_RNN(nn.Module):
         gamma=0.99,
         tau=5e-3,
         # pixel obs
-        image_encoder_fn=lambda: None,
+        image_encoder_fn=lambda: None,        
         **kwargs
     ):
         super().__init__()
@@ -123,7 +123,14 @@ class ModelFreeOffPolicy_Separate_RNN(nn.Module):
 
         return current_action_tuple, current_internal_state
 
-    def forward(self, actions, rewards, observs, dones, masks):
+    def forward(
+        self, 
+        actions, 
+        rewards, 
+        observs, 
+        dones, 
+        masks,        
+    ):
         """
         For actions a, rewards r, observs o, dones d: (T+1, B, dim)
                 where for each t in [0, T], take action a[t], then receive reward r[t], done d[t], and next obs o[t]
@@ -172,13 +179,13 @@ class ModelFreeOffPolicy_Separate_RNN(nn.Module):
         q_target = q_target * masks
         qf1_loss = ((q1_pred - q_target) ** 2).sum() / num_valid  # TD error
         qf2_loss = ((q2_pred - q_target) ** 2).sum() / num_valid  # TD error
-
+        
         self.critic_optimizer.zero_grad()
         (qf1_loss + qf2_loss).backward()
 
         torch.nn.utils.clip_grad_norm_(
             self.critic.parameters(),
-            max_norm=20.0,
+            max_norm=50.0,
         )
 
         self.critic_optimizer.step()
@@ -197,7 +204,7 @@ class ModelFreeOffPolicy_Separate_RNN(nn.Module):
         )
         # masked policy_loss
         policy_loss = (policy_loss * masks).sum() / num_valid
-
+        
         self.actor_optimizer.zero_grad()
         policy_loss.backward()
         self.actor_optimizer.step()
@@ -262,4 +269,10 @@ class ModelFreeOffPolicy_Separate_RNN(nn.Module):
             (ptu.zeros((1, batch_size, 1)).float(), dones), dim=0
         )  # (T+1, B, dim)
 
-        return self.forward(actions, rewards, observs, dones, masks)
+        return self.forward(
+            actions, 
+            rewards, 
+            observs, 
+            dones, 
+            masks,            
+        )

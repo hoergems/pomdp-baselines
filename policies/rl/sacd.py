@@ -21,7 +21,7 @@ class SACD(RLAlgorithmBase):
         alpha_lr=3e-4,
         action_dim=None,
         alpha_min=1e-4,
-        alpha_max=2.0,
+        alpha_max=5.0,
     ):
 
         self.automatic_entropy_tuning = automatic_entropy_tuning
