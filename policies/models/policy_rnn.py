@@ -46,7 +46,9 @@ class ModelFreeOffPolicy_Separate_RNN(nn.Module):
         gamma=0.99,
         tau=5e-3,
         # pixel obs
-        image_encoder_fn=lambda: None,        
+        image_encoder_fn=lambda: None,
+        actor_lr_warmup_steps=2000,
+        actor_lr_warmup_init_scale=0.01,        
         **kwargs
     ):
         super().__init__()
@@ -55,6 +57,11 @@ class ModelFreeOffPolicy_Separate_RNN(nn.Module):
         self.action_dim = action_dim
         self.gamma = gamma
         self.tau = tau
+
+        self.base_actor_lr = lr
+        self.actor_lr_warmup_steps = actor_lr_warmup_steps
+        self.actor_lr_warmup_init_scale = actor_lr_warmup_init_scale
+        self._num_actor_updates = 0
 
         self.algo = RL_ALGORITHMS[algo_name](**kwargs[algo_name], action_dim=action_dim)
 
@@ -185,7 +192,7 @@ class ModelFreeOffPolicy_Separate_RNN(nn.Module):
 
         torch.nn.utils.clip_grad_norm_(
             self.critic.parameters(),
-            max_norm=50.0,
+            max_norm=10.0,
         )
 
         self.critic_optimizer.step()
@@ -204,15 +211,18 @@ class ModelFreeOffPolicy_Separate_RNN(nn.Module):
         )
         # masked policy_loss
         policy_loss = (policy_loss * masks).sum() / num_valid
+
+        actor_lr = self._update_actor_lr()
         
         self.actor_optimizer.zero_grad()
         policy_loss.backward()
         self.actor_optimizer.step()
+        self._num_actor_updates += 1
 
         outputs = {
             "qf1_loss": qf1_loss.item(),
             "qf2_loss": qf2_loss.item(),
-            "policy_loss": policy_loss.item(),
+            "policy_loss": policy_loss.item(),            
         }
 
         ### 3. soft update
@@ -276,3 +286,22 @@ class ModelFreeOffPolicy_Separate_RNN(nn.Module):
             dones, 
             masks,            
         )
+
+    def _update_actor_lr(self):
+        if self.actor_lr_warmup_steps <= 0:
+            actor_lr = self.base_actor_lr
+        else:
+            progress = min(
+                self._num_actor_updates / self.actor_lr_warmup_steps,
+                1.0,
+            )
+            scale = (
+                self.actor_lr_warmup_init_scale
+                + (1.0 - self.actor_lr_warmup_init_scale) * progress
+            )
+            actor_lr = self.base_actor_lr * scale
+
+        for param_group in self.actor_optimizer.param_groups:
+            param_group["lr"] = actor_lr
+
+        return actor_lr

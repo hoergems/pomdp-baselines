@@ -201,6 +201,9 @@ class CategoricalPolicy(MarkovPolicyBase):
         """
         action_logits = super().forward(obs)  # (*, A)
 
+        # Prevent categorical softmax saturation / entropy collapse
+        action_logits = torch.clamp(action_logits, -10.0, 10.0)
+
         prob, log_prob = None, None
         if deterministic:
             action = torch.argmax(action_logits, dim=-1)  # (*)
@@ -208,12 +211,15 @@ class CategoricalPolicy(MarkovPolicyBase):
                 return_log_prob == False
             )  # NOTE: cannot be used for estimating entropy
         else:
-            prob = F.softmax(action_logits, dim=-1)  # (*, A)
-            distr = Categorical(prob)
+            log_prob = F.log_softmax(action_logits, dim=-1)
+            prob = log_prob.exp()
+
+            #prob = F.softmax(action_logits, dim=-1)  # (*, A)
+            distr = Categorical(probs=prob)
             # categorical distr cannot reparameterize
             action = distr.sample()  # (*)
-            if return_log_prob:
-                log_prob = torch.log(torch.clamp(prob, min=PROB_MIN))
+            if not return_log_prob:
+                log_prob = None
 
         # convert to one-hot vectors
         action = F.one_hot(action.long(), num_classes=self.action_dim).float()  # (*, A)
