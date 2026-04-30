@@ -565,6 +565,10 @@ class Learner:
             )
             self.save_replay_buffer(os.path.join(logger.get_dir(), "save", "replay_buffer.npz"))
 
+        print("[DEBUG]: Close env")
+        self.train_env.close()
+        print("[DEBUG]: Done")
+
     def expand_initial_info(self, num_envs):
         action, reward, internal_state = self.agent.get_initial_info()
 
