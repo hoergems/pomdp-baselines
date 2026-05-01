@@ -6,11 +6,11 @@ from copy import deepcopy
 import torch.nn as nn
 from torch.nn import functional as F
 from torch.optim import Adam
-from utils import helpers as utl
+from baseline_utils import helpers as utl
 from policies.rl import RL_ALGORITHMS
 from torchkit.constant import *
 import torchkit.pytorch_utils as ptu
-from utils import logger
+from baseline_utils import logger
 
 
 class ModelFreeOffPolicy_Shared_RNN(nn.Module):

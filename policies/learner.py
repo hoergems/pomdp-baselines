@@ -1,12 +1,14 @@
 # -*- coding: future_fstrings -*-
 import os, sys
+import psutil
 import time
+import gc
 
 import math
 import numpy as np
 import torch
 from torch.nn import functional as F
-import gym
+import gymnasium as gym
 
 from .models import AGENT_CLASSES, AGENT_ARCHS
 from torchkit.networks import ImageEncoder, ImageEncoder32
@@ -20,10 +22,10 @@ from buffers.seq_replay_buffer_vanilla import SeqReplayBuffer
 # RNN policy on image/vector-based task
 from buffers.seq_replay_buffer_efficient import RAMEfficient_SeqReplayBuffer
 
-from utils import helpers as utl
+from baseline_utils import helpers as utl
 from torchkit import pytorch_utils as ptu
-from utils import evaluation as utl_eval
-from utils import logger
+#from baseline_utils import evaluation as utl_eval
+from baseline_utils import logger
 
 
 class Learner:
@@ -62,47 +64,11 @@ class Learner:
         ]
         self.env_type = env_type
 
-        if self.env_type == "meta":  # meta tasks: using varibad wrapper
-            from envs.meta.make_env import make_env
-
-            self.train_env = make_env(
-                env_name,
-                max_rollouts_per_task,
-                seed=self.seed,
-                n_tasks=num_tasks,
-                **kwargs,
-            )  # oracle in kwargs
-            self.eval_env = self.train_env
-            self.eval_env.seed(self.seed + 1)
-
-            if self.train_env.n_tasks is not None:
-                # NOTE: This is off-policy varibad's setting, i.e. limited training tasks
-                # split to train/eval tasks
-                assert num_train_tasks >= num_eval_tasks > 0
-                shuffled_tasks = np.random.permutation(
-                    self.train_env.unwrapped.get_all_task_idx()
-                )
-                self.train_tasks = shuffled_tasks[:num_train_tasks]
-                self.eval_tasks = shuffled_tasks[-num_eval_tasks:]
-            else:
-                # NOTE: This is on-policy varibad's setting, i.e. unlimited training tasks
-                assert num_tasks == num_train_tasks == None
-                assert (
-                    num_eval_tasks > 0
-                )  # to specify how many tasks to be evaluated each time
-                self.train_tasks = []
-                self.eval_tasks = num_eval_tasks * [None]
-
-            # calculate what the maximum length of the trajectories is
-            self.max_rollouts_per_task = max_rollouts_per_task
-            self.max_trajectory_len = self.train_env.horizon_bamdp  # H^+ = k * H
-
-        elif self.env_type in [
-            "pomdp",
-            "credit",
+        if self.env_type in [
+            "pomdp",            
         ]:  # pomdp/mdp task, using pomdp wrapper
             import envs.pomdp
-            import envs.credit_assign
+            #import envs.credit_assign
 
             assert num_eval_tasks > 0
 
@@ -111,7 +77,7 @@ class Learner:
 
             # --- Register custom envs (safe to call multiple times) ---
             try:
-                from pomdp_problems.legged_locomotion_generative_model.register_gym_env_batched import (
+                from pomdp_problems.legged_locomotion_generative_model.register_gymnasium_env_batched import (
                     register_legged_locomotion_env,
                 )
 
@@ -120,19 +86,21 @@ class Learner:
 
             except Exception as e:
                 print(f"[WARNING] Could not register custom env: {e}")
+
             
-            self.train_env = gym.make(env_name, **env_kwargs)
+            self.train_env = gym.make(env_name, disable_env_checker=True, **env_kwargs)
 
             self.vectorized_env = kwargs.get("vectorized", False)
             self.num_envs = getattr(self.train_env, "num_envs", 1)            
 
             #self.train_env = gym.make(env_name)
-            self.train_env.seed(self.seed)
-            self.train_env.action_space.np_random.seed(self.seed)  # crucial
+            self.train_env.reset(seed=self.seed)            
             self.train_env.unwrapped.set_use_reward_shaping(True)
 
+            obs, _ = self.train_env.reset()
+
             self.eval_env = self.train_env
-            self.eval_env.seed(self.seed + 1)
+            self.eval_env.reset(seed=self.seed+1)
 
             self.train_tasks = []
             self.eval_tasks = num_eval_tasks * [None]
@@ -140,81 +108,7 @@ class Learner:
             self.max_rollouts_per_task = 1
             self.max_trajectory_len = getattr(
                 self.train_env.unwrapped, "_max_episode_steps", 60
-            )
-
-        elif self.env_type == "atari":
-            from envs.atari import create_env
-
-            assert num_eval_tasks > 0
-            self.train_env = create_env(env_name)
-            self.train_env.seed(self.seed)
-            self.train_env.action_space.np_random.seed(self.seed)  # crucial
-
-            self.eval_env = self.train_env
-            self.eval_env.seed(self.seed + 1)
-
-            self.train_tasks = []
-            self.eval_tasks = num_eval_tasks * [None]
-
-            self.max_rollouts_per_task = 1
-            self.max_trajectory_len = self.train_env._max_episode_steps
-
-        elif self.env_type == "rmdp":  # robust mdp task, using robust mdp wrapper
-            sys.path.append("envs/rl-generalization")
-            import sunblaze_envs
-
-            assert (
-                num_eval_tasks > 0 and worst_percentile > 0.0 and worst_percentile < 1.0
-            )
-            self.train_env = sunblaze_envs.make(env_name, **kwargs)  # oracle
-            self.train_env.seed(self.seed)
-            assert np.all(self.train_env.action_space.low == -1)
-            assert np.all(self.train_env.action_space.high == 1)
-
-            self.eval_env = self.train_env
-            self.eval_env.seed(self.seed + 1)
-
-            self.worst_percentile = worst_percentile
-
-            self.train_tasks = []
-            self.eval_tasks = num_eval_tasks * [None]
-
-            self.max_rollouts_per_task = 1
-            self.max_trajectory_len = self.train_env._max_episode_steps
-
-        elif self.env_type == "generalize":
-            sys.path.append("envs/rl-generalization")
-            import sunblaze_envs
-
-            self.train_env = sunblaze_envs.make(env_name, **kwargs)  # oracle in kwargs
-            self.train_env.seed(self.seed)
-            assert np.all(self.train_env.action_space.low == -1)
-            assert np.all(self.train_env.action_space.high == 1)
-
-            def check_env_class(env_name):
-                if "Normal" in env_name:
-                    return "R"
-                if "Extreme" in env_name:
-                    return "E"
-                return "D"
-
-            self.train_env_name = check_env_class(env_name)
-
-            self.eval_envs = {}
-            for env_name, num_eval_task in eval_envs.items():
-                eval_env = sunblaze_envs.make(env_name, **kwargs)  # oracle in kwargs
-                eval_env.seed(self.seed + 1)
-                self.eval_envs[eval_env] = (
-                    check_env_class(env_name),
-                    num_eval_task,
-                )  # several types of evaluation envs
-
-            logger.log(self.train_env_name, self.train_env)
-            logger.log(self.eval_envs)
-
-            self.train_tasks = []
-            self.max_rollouts_per_task = 1
-            self.max_trajectory_len = self.train_env._max_episode_steps
+            )       
 
         else:
             raise ValueError
@@ -259,7 +153,7 @@ class Learner:
         logger.log(agent_class, self.agent_arch)
 
         if image_encoder is not None:
-            image_shape = self.train_env.image_space.shape
+            image_shape = self.train_env.unwrapped.image_space.shape
             encoder_cfg = dict(image_encoder)
 
             encoder_type = encoder_cfg.pop("type", "large")
@@ -421,6 +315,11 @@ class Learner:
         self._start_time = time.time()
         self._start_time_last = time.time()
 
+        self._time_collect_total = 0.0
+        self._time_update_total = 0.0
+        self._time_eval_total = 0.0
+        self._time_save_total = 0.0
+
     @torch.no_grad()
     def collect_rollouts_for_env_steps(
         self,
@@ -444,8 +343,8 @@ class Learner:
 
     @torch.no_grad()
     def reset_vectorized_rollout_state(self, random_actions=False):
-        obs = self.train_env.reset()
-        obs = ptu.from_numpy(obs) if isinstance(obs, np.ndarray) else obs.to(ptu.device)
+        obs, _ = self.train_env.reset()
+        obs = torch.from_numpy(obs).to(ptu.device) if isinstance(obs, np.ndarray) else obs.to(ptu.device)
         obs = obs.view(obs.shape[0], -1)
 
         num_envs = obs.shape[0]
@@ -485,11 +384,13 @@ class Learner:
                 self.reset_vectorized_rollout_state(random_actions=True)
 
             while self.policy_storage.size() < self.target_initial_env_steps:
+                t0 = time.perf_counter()
                 self.collect_rollouts_for_env_steps(
                     target_env_steps=self.collect_env_steps_per_iter,
                     random_actions=True,
                     reset_envs=False,
                 )
+                self._time_collect_total += time.perf_counter() - t0
             logger.log(
                 "Done! env steps",
                 self._n_env_steps_total,
@@ -499,9 +400,11 @@ class Learner:
 
             if isinstance(self.num_updates_per_iter, float):
                 # update: pomdp task updates more for the first iter_
+                t0 = time.perf_counter()
                 train_stats = self.update(
                     int(self._n_env_steps_total * self.num_updates_per_iter),                    
                 )
+                self._time_update_total += time.perf_counter() - t0
                 self.log_train_stats(train_stats)
 
         next_eval_env_steps = self.eval_every_env_steps
@@ -518,24 +421,30 @@ class Learner:
                 f"{self.collect_env_steps_per_iter} env steps"
             )
 
+            t0 = time.perf_counter()
             env_steps = self.collect_rollouts_for_env_steps(
                 target_env_steps=self.collect_env_steps_per_iter,
                 random_actions=False,
                 reset_envs=False,
             )
+            self._time_collect_total += time.perf_counter() - t0
 
             print(f"[DEBUG]: Collected {env_steps} steps")
             logger.log(f"[DEBUG]: env steps {self._n_env_steps_total}/{self.n_env_steps_total}")
 
+            t0 = time.perf_counter()
             train_stats = self.update(
                 self.num_updates_per_iter
                 if isinstance(self.num_updates_per_iter, int)
                 else int(math.ceil(self.num_updates_per_iter * env_steps))
             )
+            self._time_update_total += time.perf_counter() - t0
             self.log_train_stats(train_stats)
 
             if self._n_env_steps_total >= next_eval_env_steps:
+                t0 = time.perf_counter()
                 perf = self.log()
+                self._time_eval_total += time.perf_counter() - t0
 
                 if getattr(self, "vectorized_env", False):
                     self.reset_vectorized_rollout_state(random_actions=False)
@@ -548,7 +457,9 @@ class Learner:
                 and self._n_env_steps_total > 0.75 * self.n_env_steps_total
                 and self._n_env_steps_total >= next_save_env_steps
             ):
-                self.save_model(self._n_env_steps_total, perf)            
+                t0 = time.perf_counter()
+                self.save_model(self._n_env_steps_total, perf)
+                self._time_save_total += time.perf_counter() - t0            
                 while next_save_env_steps <= self._n_env_steps_total:
                     next_save_env_steps += self.save_every_env_steps
             if self._n_env_steps_total >= next_model_save_steps and self.save_chkpt == True:                
@@ -558,7 +469,9 @@ class Learner:
                 self.save_replay_buffer(os.path.join(logger.get_dir(), "save", "replay_buffer.npz"))
                 next_model_save_steps += 20000
 
+        t0 = time.perf_counter()
         self.save_model(self._n_env_steps_total, perf)
+        self._time_save_total += time.perf_counter() - t0
         if self.save_chkpt == True:
             self.save_training_checkpoint(
                 os.path.join(logger.get_dir(), "save", "training_latest.pt"),
@@ -566,6 +479,9 @@ class Learner:
             self.save_replay_buffer(os.path.join(logger.get_dir(), "save", "replay_buffer.npz"))
 
         print("[DEBUG]: Close env")
+        logger.record_step(self._n_env_steps_total)
+        self.log_timing_stats(prefix="final_time")
+        logger.dump_tabular()
         self.train_env.close()
         print("[DEBUG]: Done")
 
@@ -593,7 +509,7 @@ class Learner:
 
         obs = self._vec_obs
         num_envs = obs.shape[0]
-        obs = ptu.from_numpy(obs) if isinstance(obs, np.ndarray) else obs.to(ptu.device)
+        obs = torch.from_numpy(obs).to(ptu.device) if isinstance(obs, np.ndarray) else obs.to(ptu.device)
         obs = obs.view(obs.shape[0], -1)
 
         obs_lists = self._vec_obs_lists
@@ -608,12 +524,12 @@ class Learner:
         completed_usable_rollouts = 0
         while completed_usable_rollouts < num_batched_rollouts:
             next_internal_state = None
-
             if random_actions:
                 if self.act_continuous:
                     action_np = np.stack(
                         [self.train_env.action_space.sample() for _ in range(num_envs)]
                     )
+
                     action = ptu.from_numpy(action_np).float()
                 else:
                     act_idx = torch.randint(
@@ -653,6 +569,12 @@ class Learner:
 
             done_bool = done.squeeze(-1).bool()
 
+            terminated_bool = torch.as_tensor(
+                info["terminated"],
+                device=done_bool.device,
+                dtype=torch.bool,
+            ).view(-1)
+
             ep_lengths += 1
             ep_returns += ptu.get_numpy(reward_new.squeeze(-1))
 
@@ -660,12 +582,21 @@ class Learner:
 
             for i in range(num_envs):
                 done_i = bool(done_bool[i].item())
+                terminated_i = bool(terminated_bool[i].item())
                 cutoff_i = ep_lengths[i] >= self.max_trajectory_len
 
-                #term_for_buffer = done_i and not cutoff_i
-                timeout_i = cutoff_i and not done_i
-                term_for_buffer = done_i and not timeout_i
+                term_for_buffer = terminated_i
                 episode_finished = done_i or cutoff_i
+
+                if ep_lengths[i] > self.max_trajectory_len + 1:
+                    raise RuntimeError(
+                        f"Env {i} rollout list leaked past horizon: "
+                        f"ep_lengths={ep_lengths[i]}, "
+                        f"max_trajectory_len={self.max_trajectory_len}, "
+                        f"done_i={done_i}, "
+                        f"terminated_i={terminated_i}, "
+                        f"cutoff_i={cutoff_i}"
+                    )
 
                 obs_lists[i].append(obs[i : i + 1])
                 act_lists[i].append(action[i : i + 1])
@@ -741,13 +672,13 @@ class Learner:
                     dtype=torch.long,
                 )
 
-                reset_obs = self.train_env.reset(env_ids=finished_env_ids_t)
+                reset_obs, _ = self.train_env.reset(options={"env_ids": finished_env_ids_t})
                 reset_obs = (
-                    ptu.from_numpy(reset_obs)
+                    torch.from_numpy(reset_obs).to(ptu.device)
                     if isinstance(reset_obs, np.ndarray)
                     else reset_obs.to(ptu.device)
                 )
-                reset_obs = reset_obs.view(reset_obs.shape[0], -1)
+                reset_obs = reset_obs.view(reset_obs.shape[0], -1)                
 
                 next_obs[finished_env_ids_t] = reset_obs
 
@@ -777,13 +708,10 @@ class Learner:
 
         before_env_steps = self._n_env_steps_total
         for idx in range(num_rollouts):
-            steps = 0
-
-            if self.env_type == "meta" and self.train_env.n_tasks is not None:
-                task = self.train_tasks[np.random.randint(len(self.train_tasks))]
-                obs = ptu.from_numpy(self.train_env.reset(task=task))  # reset task
-            else:
-                obs = ptu.from_numpy(self.train_env.reset())  # reset
+            steps = 0            
+            
+            obs, _ = self.train_env.reset()
+            obs = torch.from_numpy(obs).to(ptu.device)  # reset
 
             obs = obs.reshape(1, obs.shape[-1])
             done_rollout = False
@@ -935,6 +863,11 @@ class Learner:
             batch = self.policy_storage.random_episodes(batch_size)
         return ptu.np_to_pytorch_batch(batch)
 
+    def _loss_to_float(self, value):
+        if torch.is_tensor(value):
+            return float(value.detach().cpu().item())
+        return float(value)
+
     def update(self, num_updates):
         rl_losses_agg = {}
         print(f"[DEBUG]: Execute {num_updates} policy updates")
@@ -946,9 +879,11 @@ class Learner:
             rl_losses = self.agent.update(batch)
 
             for k, v in rl_losses.items():
-                if update == 0:  # first iterate - create list
+                v = self._loss_to_float(v)
+
+                if update == 0:
                     rl_losses_agg[k] = [v]
-                else:  # append values
+                else:
                     rl_losses_agg[k].append(v)
         # statistics
         for k in rl_losses_agg:
@@ -973,8 +908,8 @@ class Learner:
         # self.eval_env.unwrapped.set_use_reward_shaping(False)
 
         try:
-            obs = self.eval_env.reset()
-            obs = ptu.from_numpy(obs) if isinstance(obs, np.ndarray) else obs.to(ptu.device)
+            obs, _ = self.eval_env.reset()
+            obs = torch.from_numpy(obs).to(ptu.device) if isinstance(obs, np.ndarray) else obs.to(ptu.device)
             obs = obs.view(obs.shape[0], -1)
 
             num_envs = obs.shape[0]
@@ -1082,9 +1017,9 @@ class Learner:
                         dtype=torch.long,
                     )
 
-                    reset_obs = self.eval_env.reset(env_ids=reset_env_ids_t)
+                    reset_obs, _ = self.eval_env.reset(options={"env_ids": reset_env_ids_t})
                     reset_obs = (
-                        ptu.from_numpy(reset_obs)
+                        torch.from_numpy(reset_obs).to(ptu.device)
                         if isinstance(reset_obs, np.ndarray)
                         else reset_obs.to(ptu.device)
                     )
@@ -1139,6 +1074,48 @@ class Learner:
                     f"at env step {self._n_env_steps_total}"
                 )
 
+        proc = psutil.Process(os.getpid())
+        mem = proc.memory_info()
+
+        log_line = (
+            f"{time.time():.0f} | "
+            f"RSS: {mem.rss / 1024**3:.3f} GB | "
+            f"VMS: {mem.vms / 1024**3:.3f} GB\n"
+        )
+
+        with open("mem_log.txt", "a") as f:
+            f.write(log_line)
+
+        replay_buffer = getattr(self, "policy_storage", None)
+        if replay_buffer is None:
+            replay_buffer = getattr(self, "replay_buffer", None)
+
+        buffer_log_lines = []
+        if replay_buffer is not None:
+            buffer_log_lines.extend([
+                f"buffer size: {replay_buffer.size()}\n",
+                f"buffer top: {replay_buffer._top}\n",
+                f"buffer max: {replay_buffer._max_replay_buffer_size}\n",
+                f"valid starts: {np.count_nonzero(replay_buffer._valid_starts)}\n",
+                (
+                    "buffer RAM GB: "
+                    f"{sum(v.nbytes for v in vars(replay_buffer).values() if isinstance(v, np.ndarray)) / 1024**3:.3f}\n"
+                ),
+            ])
+        else:
+            buffer_log_lines.append("buffer: not found on self.policy_storage or self.replay_buffer\n")
+
+        with open("mem_log.txt", "a") as f:
+            f.writelines(buffer_log_lines)
+
+        gc.collect()
+
+        mem = proc.memory_info()
+        log_line = f"{time.time():.0f} | RSS after gc: {mem.rss / 1024**3:.3f} GB\n"
+
+        with open("mem_log.txt", "a") as f:
+            f.write(log_line)
+
         return returns_per_episode, success_rate, observations, total_steps
 
     @torch.no_grad()
@@ -1163,11 +1140,8 @@ class Learner:
         for task_idx, task in enumerate(tasks):
             step = 0
 
-            if self.env_type == "meta" and self.eval_env.n_tasks is not None:
-                obs = ptu.from_numpy(self.eval_env.reset(task=task))  # reset task
-                observations[task_idx, step, :] = ptu.get_numpy(obs[:obs_size])
-            else:
-                obs = ptu.from_numpy(self.eval_env.reset())  # reset
+            obs, _ = self.eval_env.reset()
+            obs = torch.from_numpy(obs).to(ptu.device)  # reset
 
             obs = obs.reshape(1, obs.shape[-1])
 
@@ -1210,12 +1184,7 @@ class Learner:
                             reward = torch.tanh(reward)
 
                         step += 1
-                        done_rollout = False if ptu.get_numpy(done[0][0]) == 0.0 else True
-
-                        if self.env_type == "meta":
-                            observations[task_idx, step, :] = ptu.get_numpy(
-                                next_obs[0, :obs_size]
-                            )
+                        done_rollout = False if ptu.get_numpy(done[0][0]) == 0.0 else True                        
 
                         # set: obs <- next_obs
                         obs = next_obs.clone()
@@ -1269,116 +1238,7 @@ class Learner:
         logger.record_tabular("z/rollouts", self._n_rollouts_total)
         logger.record_tabular("z/rl_steps", self._n_rl_update_steps_total)
 
-        # --- evaluation ----
-        if self.env_type == "meta":
-            if self.train_env.n_tasks is not None:
-                (
-                    returns_train,
-                    success_rate_train,
-                    observations,
-                    total_steps_train,
-                ) = self.evaluate(self.train_tasks[: len(self.eval_tasks)])
-            (
-                returns_eval,
-                success_rate_eval,
-                observations_eval,
-                total_steps_eval,
-            ) = self.evaluate(self.eval_tasks)
-            if self.eval_stochastic:
-                (
-                    returns_eval_sto,
-                    success_rate_eval_sto,
-                    observations_eval_sto,
-                    total_steps_eval_sto,
-                ) = self.evaluate(self.eval_tasks, deterministic=False)
-
-            if self.train_env.n_tasks is not None and "plot_behavior" in dir(
-                self.eval_env.unwrapped
-            ):
-                # plot goal-reaching trajs
-                for i, task in enumerate(
-                    self.train_tasks[: min(5, len(self.eval_tasks))]
-                ):
-                    self.eval_env.reset(task=task)  # must have task argument
-                    logger.add_figure(
-                        "trajectory/train_task_{}".format(i),
-                        utl_eval.plot_rollouts(observations[i, :], self.eval_env),
-                    )
-
-                for i, task in enumerate(
-                    self.eval_tasks[: min(5, len(self.eval_tasks))]
-                ):
-                    self.eval_env.reset(task=task)
-                    logger.add_figure(
-                        "trajectory/eval_task_{}".format(i),
-                        utl_eval.plot_rollouts(observations_eval[i, :], self.eval_env),
-                    )
-                    if self.eval_stochastic:
-                        logger.add_figure(
-                            "trajectory/eval_task_{}_sto".format(i),
-                            utl_eval.plot_rollouts(
-                                observations_eval_sto[i, :], self.eval_env
-                            ),
-                        )
-
-            if "is_goal_state" in dir(
-                self.eval_env.unwrapped
-            ):  # goal-reaching success rates
-                # some metrics
-                logger.record_tabular(
-                    "metrics/successes_in_buffer",
-                    self._successes_in_buffer / self._n_env_steps_total,
-                )
-                if self.train_env.n_tasks is not None:
-                    logger.record_tabular(
-                        "metrics/success_rate_train", np.mean(success_rate_train)
-                    )
-                logger.record_tabular(
-                    "metrics/success_rate_eval", np.mean(success_rate_eval)
-                )
-                if self.eval_stochastic:
-                    logger.record_tabular(
-                        "metrics/success_rate_eval_sto", np.mean(success_rate_eval_sto)
-                    )
-
-            for episode_idx in range(self.max_rollouts_per_task):
-                if self.train_env.n_tasks is not None:
-                    logger.record_tabular(
-                        "metrics/return_train_episode_{}".format(episode_idx + 1),
-                        np.mean(returns_train[:, episode_idx]),
-                    )
-                logger.record_tabular(
-                    "metrics/return_eval_episode_{}".format(episode_idx + 1),
-                    np.mean(returns_eval[:, episode_idx]),
-                )
-                if self.eval_stochastic:
-                    logger.record_tabular(
-                        "metrics/return_eval_episode_{}_sto".format(episode_idx + 1),
-                        np.mean(returns_eval_sto[:, episode_idx]),
-                    )
-
-            if self.train_env.n_tasks is not None:
-                logger.record_tabular(
-                    "metrics/total_steps_train", np.mean(total_steps_train)
-                )
-                logger.record_tabular(
-                    "metrics/return_train_total",
-                    np.mean(np.sum(returns_train, axis=-1)),
-                )
-            logger.record_tabular("metrics/total_steps_eval", np.mean(total_steps_eval))
-            logger.record_tabular(
-                "metrics/return_eval_total", np.mean(np.sum(returns_eval, axis=-1))
-            )
-            if self.eval_stochastic:
-                logger.record_tabular(
-                    "metrics/total_steps_eval_sto", np.mean(total_steps_eval_sto)
-                )
-                logger.record_tabular(
-                    "metrics/return_eval_total_sto",
-                    np.mean(np.sum(returns_eval_sto, axis=-1)),
-                )
-
-        elif self.env_type == "generalize":
+        if self.env_type == "generalize":
             returns_eval, success_rate_eval, total_steps_eval = {}, {}, {}
             for env, (env_name, eval_num_episodes_per_task) in self.eval_envs.items():
                 self.eval_env = env  # assign eval_env, not train_env
@@ -1477,6 +1337,7 @@ class Learner:
         self._n_env_steps_total_last = self._n_env_steps_total
         self._start_time_last = time.time()
 
+        self.log_timing_stats()
         logger.dump_tabular()
 
         if self.env_type == "generalize":
@@ -1681,6 +1542,45 @@ class Learner:
             f"[Checkpoint] Loaded training checkpoint from: {path} | "
             f"env_steps={self._n_env_steps_total}, "
             f"rl_updates={self._n_rl_update_steps_total}, "
-            f"rollouts={self._n_rollouts_total}, "
+            f"rollouts={self._n_rollouts_total}, "          
             f"alpha={getattr(self.agent.algo, 'alpha_entropy', None)}"
+        )
+
+    def log_timing_stats(self, prefix="time"):
+        elapsed = time.perf_counter() - self._start_time
+
+        logger.record_tabular(f"{prefix}/total_sec", elapsed)
+        logger.record_tabular(f"{prefix}/collect_sec", self._time_collect_total)
+        logger.record_tabular(f"{prefix}/update_sec", self._time_update_total)
+        logger.record_tabular(f"{prefix}/eval_sec", self._time_eval_total)
+        logger.record_tabular(f"{prefix}/save_sec", self._time_save_total)
+
+        logger.record_tabular(
+            f"{prefix}/collect_frac",
+            self._time_collect_total / max(elapsed, 1e-8),
+        )
+        logger.record_tabular(
+            f"{prefix}/update_frac",
+            self._time_update_total / max(elapsed, 1e-8),
+        )
+        logger.record_tabular(
+            f"{prefix}/eval_frac",
+            self._time_eval_total / max(elapsed, 1e-8),
+        )
+        logger.record_tabular(
+            f"{prefix}/save_frac",
+            self._time_save_total / max(elapsed, 1e-8),
+        )
+
+        logger.record_tabular(
+            f"{prefix}/overall_env_steps_per_sec",
+            self._n_env_steps_total / max(elapsed, 1e-8),
+        )
+        logger.record_tabular(
+            f"{prefix}/collect_env_steps_per_sec",
+            self._n_env_steps_total / max(self._time_collect_total, 1e-8),
+        )
+        logger.record_tabular(
+            f"{prefix}/updates_per_sec",
+            self._n_rl_update_steps_total / max(self._time_update_total, 1e-8),
         )

@@ -7,7 +7,7 @@ import os
 import torch
 import torch.nn as nn
 import torchkit.pytorch_utils as ptu
-from gym.spaces import Box, Discrete, Tuple
+from gymnasium.spaces import Box, Discrete, Tuple
 from itertools import product
 
 
@@ -65,7 +65,7 @@ def env_step_batched(env, action):
     returns:
       next_obs: [N, obs_dim]
       reward:   [N, 1]
-      done:     [N, 1]
+      done:     [N, 1]  # terminated OR truncated
       info:     whatever env returns
     """
     action_np = ptu.get_numpy(action)
@@ -73,14 +73,15 @@ def env_step_batched(env, action):
     if env.action_space.__class__.__name__ == "Discrete":
         action_np = np.argmax(action_np, axis=-1)  # [N]
 
-    next_obs, reward, done, info = env.step(action_np)
+    next_obs, reward, terminated, truncated, info = env.step(action_np)
 
-    next_obs = ptu.from_numpy(next_obs).view(next_obs.shape[0], -1)
+    done = np.logical_or(terminated, truncated)
+
+    next_obs = torch.from_numpy(next_obs).to(ptu.device).view(next_obs.shape[0], -1)
+    #next_obs = ptu.from_numpy(next_obs).view(next_obs.shape[0], -1)
     reward = ptu.from_numpy(np.asarray(reward, dtype=np.float32)).view(-1, 1)
     done = ptu.from_numpy(np.asarray(done, dtype=np.float32)).view(-1, 1)
-
     return next_obs, reward, done, info
-
 
 def unpack_batch(batch):
     """unpack a batch and return individual elements

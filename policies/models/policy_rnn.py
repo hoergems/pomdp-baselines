@@ -12,12 +12,12 @@ from copy import deepcopy
 import torch.nn as nn
 from torch.nn import functional as F
 from torch.optim import Adam
-from utils import helpers as utl
+from baseline_utils import helpers as utl
 from policies.rl import RL_ALGORITHMS
 import torchkit.pytorch_utils as ptu
 from policies.models.recurrent_critic import Critic_RNN
 from policies.models.recurrent_actor import Actor_RNN
-from utils import logger
+from baseline_utils import logger
 
 
 class ModelFreeOffPolicy_Separate_RNN(nn.Module):
@@ -268,7 +268,7 @@ class ModelFreeOffPolicy_Separate_RNN(nn.Module):
         obs, next_obs = batch["obs"], batch["obs2"]  # (T, B, dim)
 
         # extend observs, actions, rewards, dones from len = T to len = T+1
-        observs = torch.cat((obs[[0]], next_obs), dim=0)  # (T+1, B, dim)
+        observs = torch.cat((obs[[0]], next_obs), dim=0)  # (T+1, B, dim)               
         actions = torch.cat(
             (ptu.zeros((1, batch_size, self.action_dim)).float(), actions), dim=0
         )  # (T+1, B, dim)

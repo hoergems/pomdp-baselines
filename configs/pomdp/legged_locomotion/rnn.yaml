@@ -64,7 +64,7 @@ policy:
   image_encoder:
     type: large
     from_flattened: True
-    normalize_pixel: False
+    normalize_pixel: True
 
   reward_embedding_size: 8
 

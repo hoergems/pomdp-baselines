@@ -212,7 +212,7 @@ class ImageEncoder32(nn.Module):
         self.linear = nn.Linear(self._feat_dim, embed_size)
         self.embed_size = embed_size
 
-    def forward(self, image):
+    def forward(self, image):        
         if self.from_flattened:
             batch_shape = image.shape[:-1]
             image = image.reshape(int(np.prod(batch_shape)), *self.shape)
@@ -220,7 +220,9 @@ class ImageEncoder32(nn.Module):
             batch_shape = [image.shape[0]]
 
         if self.normalize_pixel:
-            image = image / 255.0
+            image = image.to(dtype=torch.float32) / 255.0
+        else:
+            image = image.to(dtype=torch.float32)
 
         feat = self.act(self.conv1(image))
         feat = self.act(self.conv2(feat))

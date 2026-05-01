@@ -2,10 +2,10 @@ import torch
 from copy import deepcopy
 import torch.nn as nn
 from torch.optim import Adam
-from utils import helpers as utl
+from baseline_utils import helpers as utl
 from policies.models import *
 from policies.models.policy_rnn import ModelFreeOffPolicy_Separate_RNN
-from utils import logger
+from baseline_utils import logger
 
 
 class ModelFreeOffPolicy_RNN_MLP(ModelFreeOffPolicy_Separate_RNN):
