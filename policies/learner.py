@@ -91,7 +91,7 @@ class Learner:
             self.train_env = gym.make(env_name, disable_env_checker=True, **env_kwargs)
 
             self.vectorized_env = kwargs.get("vectorized", False)
-            self.num_envs = getattr(self.train_env, "num_envs", 1)            
+            self.num_envs = getattr(self.train_env.unwrapped, "num_envs", 1)
 
             #self.train_env = gym.make(env_name)
             self.train_env.reset(seed=self.seed)            
@@ -312,8 +312,8 @@ class Learner:
 
         self._best_eval_return = -np.inf
 
-        self._start_time = time.time()
-        self._start_time_last = time.time()
+        self._start_time = time.perf_counter()
+        self._start_time_last = time.perf_counter()
 
         self._time_collect_total = 0.0
         self._time_update_total = 0.0
@@ -1328,14 +1328,16 @@ class Learner:
         else:
             raise ValueError
 
-        logger.record_tabular("z/time_cost", int(time.time() - self._start_time))
+        now = time.perf_counter()
+
+        logger.record_tabular("z/time_cost", int(now - self._start_time))
         logger.record_tabular(
             "z/fps",
             (self._n_env_steps_total - self._n_env_steps_total_last)
-            / (time.time() - self._start_time_last),
+            / (now - self._start_time_last),
         )
         self._n_env_steps_total_last = self._n_env_steps_total
-        self._start_time_last = time.time()
+        self._start_time_last = now
 
         self.log_timing_stats()
         logger.dump_tabular()

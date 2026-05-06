@@ -10,7 +10,7 @@ env:
   config_path: configs/anymal_navigation_reduced.yaml
   overrides:
     headless: true
-    seed: 73
+    seed: 74
 
   num_eval_tasks: 5
 
@@ -66,7 +66,8 @@ policy:
     from_flattened: True
     normalize_pixel: True
 
-  reward_embedding_size: 8
+  #reward_embedding_size: 8
+  reward_embedding_size: 0
 
   rnn_hidden_size: 128
 

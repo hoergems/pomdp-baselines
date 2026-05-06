@@ -147,9 +147,17 @@ class RAMEfficient_SeqReplayBuffer:
                 )
             return
 
-        write_start = self._top
+        '''write_start = self._top
         write_len = seq_len + 1
-        self._invalidate_overwritten_starts(write_start, write_len)
+
+        would_wrap = write_start + write_len > self._max_replay_buffer_size
+        buffer_full = self._size == self._max_replay_buffer_size
+
+        if buffer_full:
+            self._invalidate_overwritten_starts(write_start, write_len)
+        elif would_wrap:
+            overwritten_len = write_start + write_len - self._max_replay_buffer_size
+            self._invalidate_overwritten_starts(0, overwritten_len)'''
 
         indices = list(
             np.arange(self._top, self._top + seq_len) % self._max_replay_buffer_size
