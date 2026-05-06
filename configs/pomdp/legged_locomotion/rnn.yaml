@@ -7,7 +7,7 @@ env:
   env_type: pomdp
   env_name: LeggedLocomotionPOMDP-v0
 
-  config_path: configs/anymal_navigation_reduced.yaml
+  config_path: configs/anymal_navigation_sac_d.yaml
   overrides:
     headless: true
     seed: 74
