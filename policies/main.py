@@ -7,8 +7,14 @@ import numpy as np
 import torch
 from ruamel.yaml import YAML
 from absl import flags
-from baseline_utils import system, logger
+
 from pathlib import Path
+script_dir = Path(__file__).resolve().parent
+sys.path.append(os.path.join(script_dir, "../"))
+#sys.path.append('/path/to/your/directory')
+#sys.path.append('/path/to/your/directory')
+
+from baseline_utils import system, logger
 import psutil
 
 from torchkit.pytorch_utils import set_gpu_mode
