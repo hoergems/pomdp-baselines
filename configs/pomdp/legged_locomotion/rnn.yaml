@@ -14,9 +14,8 @@ env:
 
   num_eval_tasks: 5
 
-train:
-  # Old equivalent: 100000 * 1 * 60 = 6M env steps
-  target_env_steps_total: 2800000  
+train:  
+  target_env_steps_total: 2000000  
 
   # Old equivalent: 5 rollout warmup * 60 horizon = 300 usable buffer steps
   target_initial_env_steps: 300
