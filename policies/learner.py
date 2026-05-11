@@ -905,7 +905,7 @@ class Learner:
 
         use_reward_shaping = self.eval_env.unwrapped.get_use_reward_shaping()
         print(f"[DEBUG]: Use reward shaping: {use_reward_shaping}")
-        # self.eval_env.unwrapped.set_use_reward_shaping(False)
+        self.eval_env.unwrapped.set_use_reward_shaping(False)
 
         try:
             obs, _ = self.eval_env.reset()
@@ -1047,9 +1047,8 @@ class Learner:
                     reward = reward_new.clone()
                     internal_state = next_internal_state
 
-        finally:
-            pass
-            # self.eval_env.unwrapped.set_use_reward_shaping(use_reward_shaping)
+        finally:            
+            self.eval_env.unwrapped.set_use_reward_shaping(use_reward_shaping)
 
         returns_per_episode = returns_flat.reshape(num_eval_episodes, num_episodes)
         success_rate = success_flat
