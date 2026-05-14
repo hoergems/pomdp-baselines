@@ -410,6 +410,8 @@ class Learner:
         next_eval_env_steps = self.eval_every_env_steps
         next_save_env_steps = self.save_every_env_steps if self.save_every_env_steps > 0 else None
         next_model_save_steps = 20000
+        next_policy_snapshot_update = 10_000
+        policy_snapshot_update_interval = 10_000
         perf = -np.inf
 
         if getattr(self, "vectorized_env", False):
@@ -468,6 +470,16 @@ class Learner:
                 )                
                 self.save_replay_buffer(os.path.join(logger.get_dir(), "save", "replay_buffer.npz"))
                 next_model_save_steps += 20000
+
+            if self._n_rl_update_steps_total >= next_policy_snapshot_update:
+                self.save_model(
+                    step=next_policy_snapshot_update,
+                    perf=perf,
+                    filename=f"agent_updates_{next_policy_snapshot_update}_perf{perf:.3f}.pt",
+                )
+
+                while next_policy_snapshot_update <= self._n_rl_update_steps_total:
+                    next_policy_snapshot_update += policy_snapshot_update_interval
 
         t0 = time.perf_counter()
         self.save_model(self._n_env_steps_total, perf)
