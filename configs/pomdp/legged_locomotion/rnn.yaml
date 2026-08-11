@@ -16,6 +16,7 @@ env:
 
 train:  
   target_env_steps_total: 2000000  
+  train_episode_stats_window: 1000
 
   # Old equivalent: 5 rollout warmup * 60 horizon = 300 usable buffer steps
   target_initial_env_steps: 300

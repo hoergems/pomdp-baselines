@@ -3,6 +3,7 @@ import os, sys
 import psutil
 import time
 import gc
+from collections import deque
 
 import math
 import numpy as np
@@ -197,6 +198,7 @@ class Learner:
         target_env_steps_total=None,
         target_initial_env_steps=None,
         collect_env_steps_per_iter=None,
+        train_episode_stats_window=1000,
         **kwargs
     ):
 
@@ -258,6 +260,24 @@ class Learner:
         self.n_env_steps_total = int(target_env_steps_total)
         self.target_initial_env_steps = int(target_initial_env_steps)
         self.collect_env_steps_per_iter = int(collect_env_steps_per_iter)
+
+        train_episode_stats_window = int(train_episode_stats_window)
+        if train_episode_stats_window <= 0:
+            raise ValueError("train_episode_stats_window must be a positive integer.")
+        self.train_episode_stats_window = train_episode_stats_window
+        self._recent_train_episode_returns = deque(
+            maxlen=self.train_episode_stats_window
+        )
+        self._recent_train_episode_discounted_returns = deque(
+            maxlen=self.train_episode_stats_window
+        )
+        self._recent_train_episode_lengths = deque(
+            maxlen=self.train_episode_stats_window
+        )
+        self._recent_train_episode_successes = deque(
+            maxlen=self.train_episode_stats_window
+        )
+        self._num_train_episodes_logged = 0
 
         logger.log(
             "*** target env steps",
@@ -356,7 +376,10 @@ class Learner:
         self._vec_next_obs_lists = [[] for _ in range(num_envs)]
         self._vec_term_lists = [[] for _ in range(num_envs)]
         self._vec_ep_returns = np.zeros(num_envs, dtype=np.float32)
+        self._vec_ep_discounted_returns = np.zeros(num_envs, dtype=np.float32)
+        self._vec_ep_discount_factors = np.ones(num_envs, dtype=np.float32)
         self._vec_ep_lengths = np.zeros(num_envs, dtype=np.int64)
+        self._vec_ep_successes = np.zeros(num_envs, dtype=np.bool_)
 
         if self.agent_arch == AGENT_ARCHS.Memory and not random_actions:
             action, reward, internal_state = self.expand_initial_info(num_envs)
@@ -513,11 +536,45 @@ class Learner:
 
         return action, reward, internal_state
 
+    @staticmethod
+    def _success_info_to_bool_array(info, num_envs):
+        """Normalize an optional vectorized ``info['success']`` signal."""
+        success_step = np.zeros(num_envs, dtype=np.bool_)
+        if not isinstance(info, dict) or "success" not in info:
+            return success_step
+
+        success_info = info["success"]
+        if isinstance(success_info, torch.Tensor):
+            success_np = ptu.get_numpy(success_info).astype(bool).reshape(-1)
+        else:
+            success_np = np.asarray(success_info).astype(bool).reshape(-1)
+
+        if success_np.size == 1:
+            success_step[:] = bool(success_np.item())
+        elif success_np.size == num_envs:
+            success_step[:] = success_np
+        else:
+            raise RuntimeError(
+                "Unexpected vectorized success shape: "
+                f"{success_np.shape}; expected {num_envs} values."
+            )
+        return success_step
+
+    def _record_train_episode_stats(
+        self, episode_return, discounted_return, episode_length, episode_success
+    ):
+        """Store one completed policy episode without affecting replay eligibility."""
+        self._recent_train_episode_returns.append(float(episode_return))
+        self._recent_train_episode_discounted_returns.append(float(discounted_return))
+        self._recent_train_episode_lengths.append(int(episode_length))
+        self._recent_train_episode_successes.append(float(episode_success))
+        self._num_train_episodes_logged += 1
+
     @torch.no_grad()
     def collect_rollouts_vectorized(self, num_rollouts, random_actions=False):
         before_env_steps = self._n_env_steps_total
         if getattr(self, "_vec_obs", None) is None:
-            self.reset_vectorized_rollout_state(random_actions=random_actions)
+            self.reset_vectorized_rollout_state(random_actions=random_actions)        
 
         obs = self._vec_obs
         num_envs = obs.shape[0]
@@ -530,7 +587,10 @@ class Learner:
         next_obs_lists = self._vec_next_obs_lists
         term_lists = self._vec_term_lists
         ep_returns = self._vec_ep_returns
+        ep_discounted_returns = self._vec_ep_discounted_returns
+        ep_discount_factors = self._vec_ep_discount_factors
         ep_lengths = self._vec_ep_lengths
+        ep_successes = self._vec_ep_successes
 
         num_batched_rollouts = max(1, int(num_rollouts))
         completed_usable_rollouts = 0
@@ -587,8 +647,13 @@ class Learner:
                 dtype=torch.bool,
             ).view(-1)
 
+            reward_np = ptu.get_numpy(reward_new.squeeze(-1))
             ep_lengths += 1
-            ep_returns += ptu.get_numpy(reward_new.squeeze(-1))
+            # This is the shaped, undiscounted environment return used in training.
+            ep_returns += reward_np
+            ep_discounted_returns += ep_discount_factors * reward_np
+            ep_discount_factors *= self.agent.gamma
+            ep_successes |= self._success_info_to_bool_array(info, num_envs)
 
             finished_env_ids = []
 
@@ -619,6 +684,16 @@ class Learner:
                 if episode_finished:
                     episode_len = ep_lengths[i]
                     usable_rollout = episode_len >= 2
+
+                    # Count every completed policy episode, including episodes too
+                    # short for recurrent replay-buffer insertion.
+                    if not random_actions:
+                        self._record_train_episode_stats(
+                            ep_returns[i],
+                            ep_discounted_returns[i],
+                            episode_len,
+                            ep_successes[i],
+                        )
 
                     if usable_rollout:
                         act_buffer = torch.cat(act_lists[i], dim=0)
@@ -658,7 +733,10 @@ class Learner:
                     term_lists[i].clear()
 
                     ep_returns[i] = 0.0
+                    ep_discounted_returns[i] = 0.0
+                    ep_discount_factors[i] = 1.0
                     ep_lengths[i] = 0
+                    ep_successes[i] = False
 
                     finished_env_ids.append(i)
 
@@ -1239,6 +1317,31 @@ class Learner:
             results = self.agent.report_grad_norm()
             for k, v in results.items():
                 logger.record_tabular("rl_loss/" + k, v)
+        if len(self._recent_train_episode_returns) > 0:
+            logger.record_tabular(
+                "metrics/return_train_running_mean",
+                float(np.mean(self._recent_train_episode_returns)),
+            )
+            logger.record_tabular(
+                "metrics/discounted_return_train_running_mean",
+                float(np.mean(self._recent_train_episode_discounted_returns)),
+            )
+            logger.record_tabular(
+                "metrics/length_train_running_mean",
+                float(np.mean(self._recent_train_episode_lengths)),
+            )
+            logger.record_tabular(
+                "metrics/success_rate_train_running_mean",
+                float(np.mean(self._recent_train_episode_successes)),
+            )
+            logger.record_tabular(
+                "metrics/train_episode_stats_window_count",
+                len(self._recent_train_episode_returns),
+            )
+            logger.record_tabular(
+                "metrics/train_episodes_completed",
+                self._num_train_episodes_logged,
+            )
         logger.dump_tabular()
 
     def log(self):
@@ -1248,6 +1351,12 @@ class Learner:
         logger.record_tabular("z/env_steps", self._n_env_steps_total)
         logger.record_tabular("z/rollouts", self._n_rollouts_total)
         logger.record_tabular("z/rl_steps", self._n_rl_update_steps_total)
+
+        if hasattr(self.train_env.unwrapped.model._isaac.unwrapped, "num_conf_1_sampled"):
+            logger.record_tabular(
+                "z/conf_1_sampled",
+                self.train_env.unwrapped.model._isaac.unwrapped.num_conf_1_sampled
+            )            
 
         if self.env_type == "generalize":
             returns_eval, success_rate_eval, total_steps_eval = {}, {}, {}
@@ -1318,7 +1427,7 @@ class Learner:
 
             logger.record_tabular("metrics/total_steps_eval", np.mean(total_steps_eval))
             logger.record_tabular(
-                "metrics/return_eval_total", np.mean(np.sum(returns_eval, axis=-1))
+                "metrics/return_eval_total_undiscounted", np.mean(np.sum(returns_eval, axis=-1))
             )
             logger.record_tabular(
                 "metrics/success_rate_eval", np.mean(success_rate_eval)
@@ -1393,6 +1502,13 @@ class Learner:
             "n_rollouts_total": self._n_rollouts_total,
             "successes_in_buffer": self._successes_in_buffer,
             "best_eval_return": self._best_eval_return,
+            "recent_train_episode_returns": list(self._recent_train_episode_returns),
+            "recent_train_episode_discounted_returns": list(
+                self._recent_train_episode_discounted_returns
+            ),
+            "recent_train_episode_lengths": list(self._recent_train_episode_lengths),
+            "recent_train_episode_successes": list(self._recent_train_episode_successes),
+            "num_train_episodes_logged": self._num_train_episodes_logged,
 
             "rng_state": {
                 "python": random.getstate(),
@@ -1513,6 +1629,25 @@ class Learner:
         self._n_rollouts_total = int(ckpt.get("n_rollouts_total", 0))
         self._successes_in_buffer = int(ckpt.get("successes_in_buffer", 0))  
         self._best_eval_return = float(ckpt.get("best_eval_return", -np.inf))      
+        self._recent_train_episode_returns = deque(
+            ckpt.get("recent_train_episode_returns", []),
+            maxlen=self.train_episode_stats_window,
+        )
+        self._recent_train_episode_discounted_returns = deque(
+            ckpt.get("recent_train_episode_discounted_returns", []),
+            maxlen=self.train_episode_stats_window,
+        )
+        self._recent_train_episode_lengths = deque(
+            ckpt.get("recent_train_episode_lengths", []),
+            maxlen=self.train_episode_stats_window,
+        )
+        self._recent_train_episode_successes = deque(
+            ckpt.get("recent_train_episode_successes", []),
+            maxlen=self.train_episode_stats_window,
+        )
+        self._num_train_episodes_logged = int(
+            ckpt.get("num_train_episodes_logged", 0)
+        )
 
         sacd_state = ckpt.get("sacd", None)
         algo = self.agent.algo
