@@ -24,6 +24,7 @@ flags.DEFINE_boolean("oracle", False, "whether observe privileged POMDP info")
 flags.DEFINE_string("agent_weights", None, "path to best_agent.pt")
 flags.DEFINE_boolean("deterministic", True, "run deterministic policy")
 flags.DEFINE_integer("num_episodes", 1, "number of eval episodes to run")
+flags.DEFINE_boolean("simulate_headless", True, "Headless")
 
 
 def main():
@@ -45,6 +46,12 @@ def main():
         v["cuda"] = FLAGS.cuda
     if FLAGS.oracle:
         v["env"]["oracle"] = True
+    
+    v["env"]["overrides"]["headless"] = FLAGS.simulate_headless
+    v["env"]["num_envs"] = FLAGS.num_episodes
+
+    # Use actual initial belief during evaluation
+    v["env"]["overrides"]["dreamer_init_belief"] = False    
 
     seq_model = v["policy"]["seq_model"]
     algo = v["policy"]["algo_name"]

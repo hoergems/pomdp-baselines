@@ -98,6 +98,11 @@ We have merged the prior methods above into our repository: please see [the `all
 
 {Ant,Cheetah,Hopper,Walker}-{P,V} in the paper, corresponding to `configs/pomdp/<ant|cheetah|hopper|walker>_blt/<p|v>`, which requires PyBullet. We also provide Pendulum environments for sanity check.
 
+Legged Navigation:
+```bash
+python policies/main.py --cfg configs/pomdp/legged_locomotion/rnn.yaml
+```
+
 Take Ant-P as an example:
 ```bash
 # Run our implementation

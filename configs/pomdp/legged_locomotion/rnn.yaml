@@ -11,11 +11,12 @@ env:
   overrides:
     headless: true
     seed: 74
+    dreamer_init_belief: true
 
   num_eval_tasks: 5
 
 train:  
-  target_env_steps_total: 2000000  
+  target_env_steps_total: 1000000  
   train_episode_stats_window: 1000
 
   # Old equivalent: 5 rollout warmup * 60 horizon = 300 usable buffer steps
@@ -81,6 +82,7 @@ policy:
   sacd:
     entropy_alpha: null
     automatic_entropy_tuning: True
-    target_entropy: 0.5 # the ratio: target_entropy = ratio * log(|A|)
+    #target_entropy: 0.5 # the ratio: target_entropy = ratio * log(|A|)
+    target_entropy: 0.25 # the ratio: target_entropy = ratio * log(|A|)
     #target_entropy: 0.7 # the ratio: target_entropy = ratio * log(|A|)
     alpha_lr: 0.0003
