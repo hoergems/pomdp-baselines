@@ -4,6 +4,7 @@ import socket
 import numpy as np
 import torch
 import json
+from scipy import stats
 from ruamel.yaml import YAML
 from absl import flags
 from pathlib import Path
@@ -25,6 +26,23 @@ flags.DEFINE_string("agent_weights", None, "path to best_agent.pt")
 flags.DEFINE_boolean("deterministic", True, "run deterministic policy")
 flags.DEFINE_integer("num_episodes", 1, "number of eval episodes to run")
 flags.DEFINE_boolean("simulate_headless", True, "Headless")
+
+
+def mean_confidence_interval_95(values):
+    """Return the two-sided 95% t-interval bounds and half width for values."""
+    values = np.asarray(values, dtype=np.float64).reshape(-1)
+    n = values.size
+
+    if n < 2:
+        return None, None, None
+
+    mean = float(np.mean(values))
+    sample_std = float(np.std(values, ddof=1))
+    sem = sample_std / np.sqrt(n)
+    critical_value = stats.t.ppf(0.975, df=n - 1)
+    half_width = float(critical_value * sem)
+
+    return mean - half_width, mean + half_width, half_width
 
 
 def main():
@@ -105,17 +123,54 @@ def main():
     else:
         eval_fn = learner.evaluate
 
-    returns, success_rate, _, total_steps = eval_fn(
+    (
+        returns,
+        discounted_returns,
+        success_rate,
+        _,
+        total_steps,
+    ) = eval_fn(
         learner.eval_tasks,
         deterministic=FLAGS.deterministic,
         save_best=False,
     )
 
     returns_total = np.sum(returns, axis=-1)
+    discounted_returns_total = np.sum(discounted_returns, axis=-1)
+    mean_discounted_return = float(np.mean(discounted_returns_total))
+    (
+        mean_discounted_return_ci95_lower,
+        mean_discounted_return_ci95_upper,
+        mean_discounted_return_ci95_half_width,
+    ) = mean_confidence_interval_95(discounted_returns_total)
 
     logger.log("==== Run Agent Results ====")
     logger.log("returns:", returns_total)
     logger.log("mean return:", float(np.mean(returns_total)))
+    logger.log("discounted returns:", discounted_returns_total)
+    logger.log("mean discounted return:", mean_discounted_return)
+    if mean_discounted_return_ci95_half_width is None:
+        logger.log(
+            "mean discounted return 95% CI: unavailable; "
+            "at least two episodes are required"
+        )
+    else:
+        logger.log(
+            "mean discounted return 95% CI:",
+            [
+                mean_discounted_return_ci95_lower,
+                mean_discounted_return_ci95_upper,
+            ],
+        )
+        logger.log(
+            "mean discounted return 95% CI half width:",
+            mean_discounted_return_ci95_half_width,
+        )
+        logger.log(
+            "mean discounted return +/- 95% CI:",
+            f"{mean_discounted_return:.6f} +/- "
+            f"{mean_discounted_return_ci95_half_width:.6f}",
+        )
     logger.log("success rate:", float(np.mean(success_rate)))
     logger.log("steps:", total_steps)
     logger.log("mean steps:", float(np.mean(total_steps)))
@@ -123,14 +178,24 @@ def main():
     results = {
         "returns": returns.tolist(),
         "returns_total": returns_total.tolist(),
+        "discounted_returns": discounted_returns.tolist(),
+        "discounted_returns_total": discounted_returns_total.tolist(),
         "success_rate": success_rate.tolist(),
         "total_steps": total_steps.tolist(),
         "mean_return": float(np.mean(returns_total)),
         "std_return": float(np.std(returns_total)),
+        "mean_discounted_return": mean_discounted_return,
+        "std_discounted_return": float(np.std(discounted_returns_total)),
+        "mean_discounted_return_ci95_lower": mean_discounted_return_ci95_lower,
+        "mean_discounted_return_ci95_upper": mean_discounted_return_ci95_upper,
+        "mean_discounted_return_ci95_half_width": (
+            mean_discounted_return_ci95_half_width
+        ),
         "mean_success_rate": float(np.mean(success_rate)),
         "mean_steps": float(np.mean(total_steps)),
         "num_episodes": int(FLAGS.num_episodes),
         "deterministic": bool(FLAGS.deterministic),        
+        "gamma": float(learner.agent.gamma),
     }
 
     results_path = os.path.join(log_folder, "results.json")

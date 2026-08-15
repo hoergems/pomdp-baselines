@@ -1010,10 +1010,13 @@ class Learner:
             tracked_done = np.zeros(num_tracked_envs, dtype=bool)
 
             returns_flat = np.zeros(num_eval_episodes, dtype=np.float32)
+            discounted_returns_flat = np.zeros(num_eval_episodes, dtype=np.float32)
             success_flat = np.zeros(num_eval_episodes, dtype=np.float32)
             steps_flat = np.zeros(num_eval_episodes, dtype=np.float32)
 
             running_returns = np.zeros(num_envs, dtype=np.float32)
+            running_discounted_returns = np.zeros(num_envs, dtype=np.float32)
+            running_discount_factors = np.ones(num_envs, dtype=np.float32)
             running_steps = np.zeros(num_envs, dtype=np.int64)
             running_success = np.zeros(num_envs, dtype=bool)
 
@@ -1055,6 +1058,10 @@ class Learner:
                 active_mask[tracked_env_ids[tracked_done]] = False
 
                 running_returns[active_mask] += reward_np[active_mask]
+                running_discounted_returns[active_mask] += (
+                    running_discount_factors[active_mask] * reward_np[active_mask]
+                )
+                running_discount_factors[active_mask] *= self.agent.gamma
                 running_steps[active_mask] += 1
 
                 if isinstance(info, dict) and "success" in info:
@@ -1090,6 +1097,9 @@ class Learner:
 
                     if episode_finished[env_id]:
                         returns_flat[local_idx] = running_returns[env_id]
+                        discounted_returns_flat[local_idx] = running_discounted_returns[
+                            env_id
+                        ]
                         success_flat[local_idx] = float(running_success[env_id])
                         steps_flat[local_idx] = float(running_steps[env_id])
 
@@ -1118,6 +1128,8 @@ class Learner:
                     next_obs[reset_env_ids_t] = reset_obs
 
                     running_returns[reset_env_ids] = 0.0
+                    running_discounted_returns[reset_env_ids] = 0.0
+                    running_discount_factors[reset_env_ids] = 1.0
                     running_steps[reset_env_ids] = 0
                     running_success[reset_env_ids] = False
 
@@ -1141,6 +1153,9 @@ class Learner:
             self.eval_env.unwrapped.set_use_reward_shaping(use_reward_shaping)
 
         returns_per_episode = returns_flat.reshape(num_eval_episodes, num_episodes)
+        discounted_returns_per_episode = discounted_returns_flat.reshape(
+            num_eval_episodes, num_episodes
+        )
         success_rate = success_flat
         total_steps = steps_flat
 
@@ -1205,14 +1220,21 @@ class Learner:
         with open("mem_log.txt", "a") as f:
             f.write(log_line)
 
-        return returns_per_episode, success_rate, observations, total_steps
+        return (
+            returns_per_episode,
+            discounted_returns_per_episode,
+            success_rate,
+            observations,
+            total_steps,
+        )
 
     @torch.no_grad()
-    def evaluate(self, tasks, deterministic=True):
+    def evaluate(self, tasks, deterministic=True, save_best=True):
 
         num_episodes = self.max_rollouts_per_task  # k
         # max_trajectory_len = k*H
         returns_per_episode = np.zeros((len(tasks), num_episodes))
+        discounted_returns_per_episode = np.zeros((len(tasks), num_episodes))
         success_rate = np.zeros(len(tasks))
         total_steps = np.zeros(len(tasks))
 
@@ -1245,6 +1267,8 @@ class Learner:
             try:
                 for episode_idx in range(num_episodes):
                     running_reward = 0.0
+                    running_discounted_reward = 0.0
+                    discount_factor = 1.0
                     for _ in range(num_steps_per_episode):
                         if self.agent_arch == AGENT_ARCHS.Memory:
                             (action, _, _, _), internal_state = self.agent.act(
@@ -1266,8 +1290,11 @@ class Learner:
                             self.eval_env, action.squeeze(dim=0)
                         )
 
-                        # add raw reward
-                        running_reward += reward.item()
+                        # Add raw, unclipped rewards to evaluation metrics.
+                        raw_reward = reward.item()
+                        running_reward += raw_reward
+                        running_discounted_reward += discount_factor * raw_reward
+                        discount_factor *= self.agent.gamma
                         # clip reward if necessary for policy inputs
                         if self.reward_clip and self.env_type == "atari":
                             reward = torch.tanh(reward)
@@ -1300,12 +1327,21 @@ class Learner:
                             break
 
                     returns_per_episode[task_idx, episode_idx] = running_reward
+                    discounted_returns_per_episode[
+                        task_idx, episode_idx
+                    ] = running_discounted_reward
                 total_steps[task_idx] = step
             finally:
                 # Set cached use_reward_shaping
                 self.eval_env.unwrapped.set_use_reward_shaping(use_reward_shaping)
 
-        return returns_per_episode, success_rate, observations, total_steps
+        return (
+            returns_per_episode,
+            discounted_returns_per_episode,
+            success_rate,
+            observations,
+            total_steps,
+        )
 
     def log_train_stats(self, train_stats):
         logger.record_step(self._n_env_steps_total)
@@ -1365,7 +1401,7 @@ class Learner:
                 for suffix, deterministic in zip(["", "_sto"], [True, False]):
                     if deterministic == False and self.eval_stochastic == False:
                         continue
-                    return_eval, success_eval, _, total_step_eval = self.evaluate(
+                    return_eval, _, success_eval, _, total_step_eval = self.evaluate(
                         eval_num_episodes_per_task * [None],
                         deterministic=deterministic,
                     )
@@ -1387,7 +1423,7 @@ class Learner:
                 logger.record_tabular(f"metrics/total_steps_eval_{k}", np.mean(v))
 
         elif self.env_type == "rmdp":
-            returns_eval, _, _, total_steps_eval = self.evaluate(self.eval_tasks)
+            returns_eval, _, _, _, total_steps_eval = self.evaluate(self.eval_tasks)
             returns_eval = returns_eval.squeeze(-1)
             # np.quantile is introduced in np v1.15, so we have to use np.percentile
             cutoff = np.percentile(returns_eval, 100 * self.worst_percentile)
@@ -1413,13 +1449,18 @@ class Learner:
         elif self.env_type in ["pomdp", "credit", "atari"]:
             eval_fn = self.evaluate_batched if getattr(self, "vectorized_env", False) else self.evaluate
 
-            returns_eval, success_rate_eval, _, total_steps_eval = eval_fn(
-                self.eval_tasks
-            )
+            (
+                returns_eval,
+                discounted_returns_eval,
+                success_rate_eval,
+                _,
+                total_steps_eval,
+            ) = eval_fn(self.eval_tasks)
 
             if self.eval_stochastic:
                 (
                     returns_eval_sto,
+                    discounted_returns_eval_sto,
                     success_rate_eval_sto,
                     _,
                     total_steps_eval_sto,
@@ -1428,6 +1469,10 @@ class Learner:
             logger.record_tabular("metrics/total_steps_eval", np.mean(total_steps_eval))
             logger.record_tabular(
                 "metrics/return_eval_total_undiscounted", np.mean(np.sum(returns_eval, axis=-1))
+            )
+            logger.record_tabular(
+                "metrics/return_eval_total_discounted",
+                np.mean(np.sum(discounted_returns_eval, axis=-1)),
             )
             logger.record_tabular(
                 "metrics/success_rate_eval", np.mean(success_rate_eval)
@@ -1440,6 +1485,10 @@ class Learner:
                 logger.record_tabular(
                     "metrics/return_eval_total_sto",
                     np.mean(np.sum(returns_eval_sto, axis=-1)),
+                )
+                logger.record_tabular(
+                    "metrics/return_eval_total_discounted_sto",
+                    np.mean(np.sum(discounted_returns_eval_sto, axis=-1)),
                 )
                 logger.record_tabular(
                     "metrics/success_rate_eval_sto", np.mean(success_rate_eval_sto)
