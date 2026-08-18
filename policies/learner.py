@@ -1,4 +1,5 @@
 # -*- coding: future_fstrings -*-
+import csv
 import os, sys
 import psutil
 import time
@@ -339,6 +340,43 @@ class Learner:
         self._time_update_total = 0.0
         self._time_eval_total = 0.0
         self._time_save_total = 0.0
+        self._initialize_timing_csv()
+
+    def _timing_csv_path(self):
+        log_dir = logger.get_dir()
+        os.makedirs(log_dir, exist_ok=True)
+        return os.path.join(log_dir, "timings.csv")
+
+    def _initialize_timing_csv(self):
+        """Create a fresh timing CSV for a newly started training run."""
+        self._write_timing_csv_header("w")
+
+    def _write_timing_csv_header(self, mode):
+        with open(self._timing_csv_path(), mode, newline="") as timing_file:
+            csv.writer(timing_file).writerow(
+                [
+                    "transitions",
+                    "collect_time_sec",
+                    "update_time_sec",
+                    "total_time_sec",
+                ]
+            )
+
+    def _append_timing_csv(self):
+        """Append the collection and update timings accumulated so far."""
+        path = self._timing_csv_path()
+        if not os.path.exists(path) or os.path.getsize(path) == 0:
+            self._write_timing_csv_header("w")
+
+        with open(path, "a", newline="") as timing_file:
+            csv.writer(timing_file).writerow(
+                [
+                    self._n_env_steps_total,
+                    self._time_collect_total,
+                    self._time_update_total,
+                    self._time_collect_total + self._time_update_total,
+                ]
+            )
 
     @torch.no_grad()
     def collect_rollouts_for_env_steps(
@@ -430,6 +468,8 @@ class Learner:
                 self._time_update_total += time.perf_counter() - t0
                 self.log_train_stats(train_stats)
 
+            self._append_timing_csv()
+
         next_eval_env_steps = self.eval_every_env_steps
         next_save_env_steps = self.save_every_env_steps if self.save_every_env_steps > 0 else None
         next_model_save_steps = 20000
@@ -464,6 +504,7 @@ class Learner:
                 else int(math.ceil(self.num_updates_per_iter * env_steps))
             )
             self._time_update_total += time.perf_counter() - t0
+            self._append_timing_csv()
             self.log_train_stats(train_stats)
 
             if self._n_env_steps_total >= next_eval_env_steps:
@@ -1558,6 +1599,8 @@ class Learner:
             "recent_train_episode_lengths": list(self._recent_train_episode_lengths),
             "recent_train_episode_successes": list(self._recent_train_episode_successes),
             "num_train_episodes_logged": self._num_train_episodes_logged,
+            "time_collect_total": self._time_collect_total,
+            "time_update_total": self._time_update_total,
 
             "rng_state": {
                 "python": random.getstate(),
@@ -1697,6 +1740,8 @@ class Learner:
         self._num_train_episodes_logged = int(
             ckpt.get("num_train_episodes_logged", 0)
         )
+        self._time_collect_total = float(ckpt.get("time_collect_total", 0.0))
+        self._time_update_total = float(ckpt.get("time_update_total", 0.0))
 
         sacd_state = ckpt.get("sacd", None)
         algo = self.agent.algo
