@@ -86,6 +86,12 @@ class Learner:
                 register_legged_locomotion_env()
                 print("[DEBUG] Registered LeggedLocomotionPOMDP-v0")
 
+                from pomdp_problems.vts_floor_learned.register_gymnasium_env import (
+                    register_vts_floor_env,
+                )
+                register_vts_floor_env()
+                print("[DEBUG] Registered VTSFloorPOMDP-v0")
+
             except Exception as e:
                 print(f"[WARNING] Could not register custom env: {e}")
 
@@ -1429,7 +1435,8 @@ class Learner:
         logger.record_tabular("z/rollouts", self._n_rollouts_total)
         logger.record_tabular("z/rl_steps", self._n_rl_update_steps_total)
 
-        if hasattr(self.train_env.unwrapped.model._isaac.unwrapped, "num_conf_1_sampled"):
+        if (hasattr(self.train_env.unwrapped.model, "_isaac") and
+            hasattr(self.train_env.unwrapped.model._isaac.unwrapped, "num_conf_1_sampled")):
             logger.record_tabular(
                 "z/conf_1_sampled",
                 self.train_env.unwrapped.model._isaac.unwrapped.num_conf_1_sampled
