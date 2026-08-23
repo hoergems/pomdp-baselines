@@ -39,6 +39,11 @@ flags.DEFINE_boolean(
 flags.DEFINE_boolean("debug", False, "debug mode")
 flags.DEFINE_string("resume_ckpt", None, "path to training checkpoint")
 flags.DEFINE_boolean("save_ckpt", False, "save training checkpoints")
+flags.DEFINE_list(
+    "env_configs",
+    None,
+    "Override env.overrides.env_configs; comma-separated, e.g. conf_1,conf_3",
+)
 
 flags.FLAGS(sys.argv)
 yaml = YAML()
@@ -67,6 +72,9 @@ if FLAGS.cuda is not None:
     v["cuda"] = FLAGS.cuda
 if FLAGS.oracle:
     v["env"]["oracle"] = True
+if FLAGS.env_configs is not None:
+    env_overrides = v["env"].setdefault("overrides", {})
+    env_overrides["env_configs"] = list(FLAGS.env_configs)
 
 # system: device, threads, seed, pid
 seed = v["seed"]

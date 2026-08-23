@@ -12,6 +12,7 @@ env:
     headless: true
     seed: 74
     dreamer_init_belief: true
+    env_configs: ["conf_1", "conf_2"]
 
   num_eval_tasks: 5
 

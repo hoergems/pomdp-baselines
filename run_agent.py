@@ -26,6 +26,11 @@ flags.DEFINE_string("agent_weights", None, "path to best_agent.pt")
 flags.DEFINE_boolean("deterministic", True, "run deterministic policy")
 flags.DEFINE_integer("num_episodes", 1, "number of eval episodes to run")
 flags.DEFINE_boolean("simulate_headless", True, "Headless")
+flags.DEFINE_list(
+    "env_configs",
+    None,
+    "Override env.overrides.env_configs; comma-separated, e.g. conf_1,conf_3",
+)
 
 
 def mean_confidence_interval_95(values):
@@ -43,6 +48,22 @@ def mean_confidence_interval_95(values):
     half_width = float(critical_value * sem)
 
     return mean - half_width, mean + half_width, half_width
+
+
+def apply_evaluation_env_overrides(
+    config, num_episodes, simulate_headless, env_configs=None
+):
+    """Apply evaluation-only environment overrides to a loaded config."""
+    env = config["env"]
+    env_overrides = env.setdefault("overrides", {})
+
+    env_overrides["headless"] = simulate_headless
+    env["num_envs"] = num_episodes
+    # Evaluation starts from the actual initial belief.
+    env_overrides["dreamer_init_belief"] = False
+
+    if env_configs is not None:
+        env_overrides["env_configs"] = list(env_configs)
 
 
 def main():
@@ -65,11 +86,12 @@ def main():
     if FLAGS.oracle:
         v["env"]["oracle"] = True
     
-    v["env"]["overrides"]["headless"] = FLAGS.simulate_headless
-    v["env"]["num_envs"] = FLAGS.num_episodes
-
-    # Use actual initial belief during evaluation
-    v["env"]["overrides"]["dreamer_init_belief"] = False    
+    apply_evaluation_env_overrides(
+        v,
+        num_episodes=FLAGS.num_episodes,
+        simulate_headless=FLAGS.simulate_headless,
+        env_configs=FLAGS.env_configs,
+    )
 
     seq_model = v["policy"]["seq_model"]
     algo = v["policy"]["algo_name"]
