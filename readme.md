@@ -103,6 +103,28 @@ Legged Navigation:
 python policies/main.py --cfg configs/pomdp/legged_locomotion/rnn.yaml
 ```
 
+Eval Legged Navigation:
+```bash
+python run_agent.py \
+    --cfg configs/pomdp/legged_locomotion/rnn.yaml \
+    --agent_weights /path/to/best_agent.pt \
+    --num_episodes 100 \
+    --env_configs=conf_1
+```
+
+Floor positioning:
+```bash
+python policies/main.py --cfg configs/pomdp/vts_floor/rnn.yaml
+```
+
+Eval floor positioning:
+```bash
+python run_agent.py \
+    --cfg configs/pomdp/vts_floor/rnn.yaml \
+    --agent_weights /path/to/best_agent.pt \
+    --num_episodes 100
+```
+
 Take Ant-P as an example:
 ```bash
 # Run our implementation
