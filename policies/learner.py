@@ -304,6 +304,7 @@ class Learner:
         num_episodes_per_task=1,
         eval_every_env_steps=None,
         save_every_env_steps=None,
+        policy_snapshot_every_env_steps=-1,
         **kwargs
     ):
 
@@ -326,6 +327,9 @@ class Learner:
 
         self.eval_every_env_steps = int(eval_every_env_steps)
         self.save_every_env_steps = int(save_every_env_steps)
+        self.policy_snapshot_every_env_steps = int(
+            policy_snapshot_every_env_steps
+        )
         self.log_tensorboard = log_tensorboard
         self.eval_stochastic = eval_stochastic
         self.eval_num_episodes_per_task = num_episodes_per_task
@@ -479,8 +483,11 @@ class Learner:
         next_eval_env_steps = self.eval_every_env_steps
         next_save_env_steps = self.save_every_env_steps if self.save_every_env_steps > 0 else None
         next_model_save_steps = 20000
-        next_policy_snapshot_update = 10_000
-        policy_snapshot_update_interval = 10_000
+        next_policy_snapshot_env_steps = (
+            self.policy_snapshot_every_env_steps
+            if self.policy_snapshot_every_env_steps > 0
+            else None
+        )
         perf = -np.inf
 
         if getattr(self, "vectorized_env", False):
@@ -541,15 +548,24 @@ class Learner:
                 self.save_replay_buffer(os.path.join(logger.get_dir(), "save", "replay_buffer.npz"))
                 next_model_save_steps += 20000
 
-            if self._n_rl_update_steps_total >= next_policy_snapshot_update:
+            if (
+                next_policy_snapshot_env_steps is not None
+                and self._n_env_steps_total >= next_policy_snapshot_env_steps
+            ):
+                current_env_steps = self._n_env_steps_total
                 self.save_model(
-                    step=next_policy_snapshot_update,
+                    step=current_env_steps,
                     perf=perf,
-                    filename=f"agent_updates_{next_policy_snapshot_update}_perf{perf:.3f}.pt",
+                    filename=self._policy_snapshot_filename(current_env_steps, perf),
                 )
 
-                while next_policy_snapshot_update <= self._n_rl_update_steps_total:
-                    next_policy_snapshot_update += policy_snapshot_update_interval
+                _, next_policy_snapshot_env_steps = (
+                    self._advance_policy_snapshot_threshold(
+                        next_policy_snapshot_env_steps,
+                        self.policy_snapshot_every_env_steps,
+                        current_env_steps,
+                    )
+                )
 
         t0 = time.perf_counter()
         self.save_model(self._n_env_steps_total, perf)
@@ -1577,6 +1593,22 @@ class Learner:
         torch.save(self.agent.state_dict(), save_path)
 
         print(f"[Model] Saved to {save_path}")
+
+    @staticmethod
+    def _policy_snapshot_filename(env_steps, perf):
+        return f"agent_env_steps_{env_steps:09d}_perf{perf:.3f}.pt"
+
+    @staticmethod
+    def _advance_policy_snapshot_threshold(next_threshold, interval, current_env_steps):
+        """Return whether a snapshot is due and the following step threshold."""
+        if interval <= 0 or next_threshold is None:
+            return False, None
+        if current_env_steps < next_threshold:
+            return False, next_threshold
+
+        while next_threshold <= current_env_steps:
+            next_threshold += interval
+        return True, next_threshold
 
     def load_model(self, ckpt_path):
         self.agent.load_state_dict(torch.load(ckpt_path, map_location=ptu.device))

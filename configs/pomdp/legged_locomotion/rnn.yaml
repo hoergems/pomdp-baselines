@@ -46,6 +46,7 @@ eval:
   # Old equivalent: every 50 iters * 90 steps = 4500 env steps
   #eval_every_env_steps: 4500
   eval_every_env_steps: 100000
+  policy_snapshot_every_env_steps: 100000
 
   save_every_env_steps: -1
   eval_stochastic: false
